@@ -2,99 +2,116 @@
 ; VBXE Title Screen Enhancement for Starquake (Atari XL/XE)
 ; Assembled with MADS assembler
 ;
-; Uses VBXE XCOLOR mode + Colour Attribute Map to give each
-; character cell independent foreground/background colours.
+; Based on the Mad-Pascal VBXE library (tebe6502/Mad-Pascal).
 ;
-; In standard ANTIC mode 2, PF1 luminance is combined with
-; PF2 hue — you can't get independent colours.  XCOLOR=1
-; bypasses this: PF1 and PF2 become direct 8-bit palette
-; indices with full RGB independence.
-;
-; The attribute map overrides the global colour registers
-; per character cell:
-;   byte 0 = fill pattern ($FF = solid PF2 background)
-;   byte 1 = PF1 (foreground / text colour)
-;   byte 2 = PF2 (background colour)
-;   byte 3 = CTRL
-;
-; VRAM layout (MEMAC-B bank 0):
-;   $0000 (CPU $4000): XDL — 12 bytes
-;   $0100 (CPU $4100): Attribute map — 30 rows × 160 bytes
+; CRITICAL FIX: Register offsets are from $D640 base, so
+; VIDEO_CONTROL = $D640+$00, not $D640+$40!
+; The Mad-Pascal lib uses indirect (fxptr=$D600, Y=$40+),
+; but for absolute addressing the offsets must be $00+.
 ; ============================================================
 
-; --- VBXE registers (base $D640) ---
-VBXE        = $D640
-VCTL        = VBXE+$00
-XDLA0       = VBXE+$01
-XDLA1       = VBXE+$02
-XDLA2       = VBXE+$03
-CSEL        = VBXE+$04
-PSEL        = VBXE+$05
-CR          = VBXE+$06
-CG          = VBXE+$07
-CB          = VBXE+$08
-MEMB        = VBXE+$14
+; --- Absolute VBXE register addresses ---
+VBXE_VC     = $D640    ; VIDEO_CONTROL
+VBXE_XDL0   = $D641    ; XDL address bits 0-7
+VBXE_XDL1   = $D642    ; XDL address bits 8-15
+VBXE_XDL2   = $D643    ; XDL address bits 16-18
+VBXE_CSEL   = $D644    ; Colour index select
+VBXE_PSEL   = $D645    ; Palette select
+VBXE_CR     = $D646    ; Red   (0-127)
+VBXE_CG     = $D647    ; Green (0-127)
+VBXE_CB     = $D648    ; Blue  (0-127)
+VBXE_BLT    = $D653    ; Blitter start/busy
+VBXE_IRQ    = $D654    ; IRQ control
+VBXE_P0     = $D655    ; Priority 0
+VBXE_P1     = $D656    ; Priority 1
+VBXE_P2     = $D657    ; Priority 2
+VBXE_P3     = $D658    ; Priority 3
+VBXE_MEMB   = $D65D    ; MEMAC-B control
+VBXE_MEMC   = $D65E    ; MEMAC-A control
+VBXE_MEMS   = $D65F    ; MEMAC-A bank select
 
-; --- Temp zero-page (safe during init) ---
-PTR         = $E0          ; 16-bit VRAM write pointer
-FG          = $E2          ; current row foreground colour
+; --- VIDEO_CONTROL bits ---
+VC_XDL      = $01      ; Enable XDL
+VC_XCOLOR   = $02      ; Extended colour mode
+
+; --- VRAM addresses ---
+VBXE_XDLADR = $0000    ; XDL in VRAM
+VBXE_MAPADR = $1000    ; Colour map in VRAM
+
+; --- MEMAC-A window ---
+VBXE_WINDOW = $B000    ; 4K CPU window
+
+; --- Temp zero-page ---
+PTR         = $E0
+FG          = $E2
 
 ; ============================================================
         org $0480
 ; ============================================================
 vbxe_init:
         ; --- Detect VBXE ---
-        lda VCTL
+        lda VBXE_VC
         and #$F0
-        cmp #$10           ; FX core 1.x?
-        beq go
+        cmp #$10
+        beq detected
         rts
-go:
-        ; --- Enable MEMAC-B bank 0 ---
-        ; Maps CPU $4000-$7FFF to VRAM $0000-$3FFF.
-        lda #$80
-        sta MEMB
+detected:
 
-        ; --- Write XDL to VRAM $0000 (CPU $4000) ---
+        ; --- Configure MEMAC-A ---
+        ; Control = hi(VBXE_WINDOW) | $08 = $B0 | $08 = $B8
+        ; Maps 4K at CPU $B000, CPU access on, ANTIC off.
+        lda #$B8
+        sta VBXE_MEMC
+
+        ; --- Write XDL to VRAM $0000 ---
+        ; Bank 0: MEMS = $80 + (VRAM addr / $1000)
+        lda #$80
+        sta VBXE_MEMS
+
         ldx #0
 cpxdl:  lda xdl_data,x
-        sta $4000,x
+        sta VBXE_WINDOW,x
         inx
         cpx #xdl_end-xdl_data
         bne cpxdl
 
-        ; --- Generate attribute map ---
-        ; 30 rows × 40 columns × 4 bytes = 4800 bytes
-        ; at VRAM $0100 (CPU $4100).
-        lda #<$4100
+        ; Unmap bank
+        lda #$00
+        sta VBXE_MEMS
+
+        ; --- Fill colour map at VRAM $1000 ---
+        ; Bank 1: MEMS = $80 + 1 = $81
+        lda #$81
+        sta VBXE_MEMS
+
+        lda #<VBXE_WINDOW
         sta PTR
-        lda #>$4100
+        lda #>VBXE_WINDOW
         sta PTR+1
 
-        ldx #0             ; row counter (0-29)
-rowlp:  lda row_fg,x       ; foreground for this row
+        ldx #0             ; row counter (0-23)
+rowlp:  lda row_fg,x
         sta FG
 
-        ldy #0             ; byte offset within row (0-159)
+        ldy #0
 collp:
-        ; byte 0: fill pattern — $FF = solid PF2 background
-        ;   (in ANTIC hires, '1' bits show PF2 colour,
-        ;    '0' bits show COLBK — we want full PF2)
+        ; byte 0: PF0 colour / fill pattern
         lda #$FF
         sta (PTR),y
         iny
 
-        ; byte 1: PF1 — foreground / text colour
+        ; byte 1: PF1 (foreground)
         lda FG
         sta (PTR),y
         iny
 
-        ; byte 2: PF2 — background colour (dark navy)
-        lda #$92
+        ; byte 2: PF2 (background)
+        lda #$94
         sta (PTR),y
         iny
 
-        ; byte 3: CTRL — no special flags
+        ; byte 3: palette config
+        ; bits 7-6 = PF palette 0, bits 5-4 = OV palette 0
         lda #$00
         sta (PTR),y
         iny
@@ -102,7 +119,7 @@ collp:
         cpy #160           ; 40 cells × 4 bytes
         bne collp
 
-        ; Advance pointer by 160
+        ; Advance PTR by 160
         clc
         lda PTR
         adc #160
@@ -111,330 +128,161 @@ collp:
         inc PTR+1
 noc:
         inx
-        cpx #30
+        cpx #24
         bne rowlp
 
-        ; --- Set C64-like palette ---
+        ; Unmap bank
+        lda #$00
+        sta VBXE_MEMS
+
+        ; --- Set palette ---
         jsr set_palette
 
-        ; --- Point XDL to VRAM $0000 ---
+        ; --- Priority registers ---
+        lda #$FF
+        sta VBXE_P0
         lda #$00
-        sta XDLA0
-        sta XDLA1
-        sta XDLA2
+        sta VBXE_P1
+        sta VBXE_P2
+        sta VBXE_P3
+        sta VBXE_IRQ
+        sta VBXE_BLT
 
-        ; --- Enable XCOLOR + XDL ---
-        ; bit 0 = XCOLOR  (8-bit palette indices, no hue/luma)
-        ; bit 1 = XDL_ENABLED
-        lda #$03
-        sta VCTL
-
-        ; --- Disable MEMAC-B (restore normal RAM) ---
+        ; --- XDL address = VRAM $000000 ---
         lda #$00
-        sta MEMB
+        sta VBXE_XDL0
+        sta VBXE_XDL1
+        sta VBXE_XDL2
+
+        ; --- Enable XDL + XCOLOR ---
+        lda #VC_XDL|VC_XCOLOR  ; = $03
+        sta VBXE_VC
 
         rts
 
 ; ============================================================
-; XDL — single entry covering all 240 visible scanlines.
+; XDL data — 23-byte structure matching Mad-Pascal vbxeinit.asm
 ;
-; XDLC bits set:
-;   3  = ATT       (colour attribute map on)
-;   10 = MAPADR    (set map address + step)
-;   11 = MAPPAR    (set map cell dimensions)
-;   14 = RPTL      (repeat scanlines)
-;   15 = END       (last entry)
+; Entry 1: 24 blank scanlines
+; Entry 2: 192 scanlines with colour map
 ;
-; XDLC word = $0008 | $0400 | $0800 | $4000 | $8000 = $CC08
+; XDLC for entry 2 includes ALL field bits so the complete
+; data block is present (matching the proven layout).
 ; ============================================================
 xdl_data:
-        .byte $08,$CC              ; XDLC (little-endian)
-        ; --- MAPADR (5 bytes) ---
-        .byte $00,$01,$00          ; map address = VRAM $000100
-        .byte $A0,$00              ; step = 160 per map row
-        ; --- MAPPAR (4 bytes) ---
-        .byte $00                  ; H_SIZE = 0 → 8 pixels wide
-        .byte $07                  ; V_SIZE = 7 → 8 scanlines tall
-        .byte $00                  ; ANTIC palette bank = 0
-        .byte $00                  ; Overlay palette bank = 0
-        ; --- RPTL (1 byte) ---
-        .byte 239                  ; 240 scanlines total
+        ; --- Entry 1: blank top border ---
+        .word $0020            ; XDLC = RPTL
+        .byte 23               ; 24 scanlines
+
+        ; --- Entry 2: main display ---
+        ; XDLC = END|MAPON|RPTL|OVADR|CHBASE|MAPADR|MAPPAR|OVATT
+        ; = $8000|$0008|$0020|$0040|$0100|$0200|$0400|$0800
+        ; = $8F68
+        .word $8F68
+        .byte 191              ; RPTL: 192 scanlines
+
+        ; OVADR (5 bytes): overlay address + step
+        ; No overlay active, but fields must be present.
+        .byte $00,$00,$00      ; overlay addr = 0
+        .byte $40,$01          ; overlay step = 320
+
+        ; CHBASE (1 byte)
+        .byte $02              ; char base = $1000/$800 = 2
+
+        ; MAPADR (5 bytes): map address + step
+        .byte <VBXE_MAPADR    ; $00
+        .byte >VBXE_MAPADR    ; $10
+        .byte $00              ; bank 0
+        .byte <160             ; step = 160
+        .byte >160             ; = $00A0
+
+        ; MAPPAR (4 bytes): scroll + cell dimensions
+        .byte $00              ; HSCROL = 0
+        .byte $00              ; VSCROL = 0
+        .byte 7                ; WIDTH = 8 cells - 1
+        .byte 7                ; HEIGHT = 8 scanlines - 1
+
+        ; OVATT (2 bytes): palette + priority
+        .byte $01              ; PF pal 0, OV pal 0, width=normal
+        .byte $FF              ; priority: overlay above all
 xdl_end:
 
 ; ============================================================
-; Per-row foreground colours (30 entries, one per 8-scanline
-; text row).  These are VBXE palette indices.
-;
-; Designed to approximate the C64 Starquake title screen:
-;   top/bottom = dark (invisible on dark bg)
-;   border rows = teal
-;   title area = purple → blue → cyan gradient
-;   credits = light blue
+; Per-row foreground colours (24 rows of text)
 ; ============================================================
 row_fg:
-        .byte $92              ; row 0  — overscan (invisible)
-        .byte $92              ; row 1
-        .byte $92              ; row 2
-        .byte $96              ; row 3  — top border, dark teal
+        .byte $96              ; row 0  — dark teal
+        .byte $AA              ; row 1  — teal
+        .byte $9C              ; row 2  — light blue
+        .byte $9E              ; row 3  — bright blue
         .byte $AA              ; row 4  — teal
-        .byte $9A              ; row 5  — light blue (top text)
-        .byte $9A              ; row 6
-        .byte $AA              ; row 7  — teal separator
-        .byte $56              ; row 8  — purple (title start)
-        .byte $58              ; row 9  — purple-blue
-        .byte $7A              ; row 10 — blue
-        .byte $9A              ; row 11 — blue-cyan
-        .byte $AA              ; row 12 — cyan
+        .byte $96              ; row 5  — dark teal
+        .byte $56              ; row 6  — purple
+        .byte $58              ; row 7  — purple-blue
+        .byte $7A              ; row 8  — blue
+        .byte $9A              ; row 9  — light blue
+        .byte $AA              ; row 10 — cyan
+        .byte $AC              ; row 11 — bright cyan
+        .byte $AE              ; row 12 — white-cyan
         .byte $AC              ; row 13 — bright cyan
-        .byte $AE              ; row 14 — white-cyan
-        .byte $AC              ; row 15 — bright cyan
-        .byte $AA              ; row 16 — cyan (subtitle area)
+        .byte $AA              ; row 14 — cyan
+        .byte $9A              ; row 15 — light blue
+        .byte $96              ; row 16 — dark teal
         .byte $9A              ; row 17 — light blue
-        .byte $9A              ; row 18 — light blue (credits)
-        .byte $AA              ; row 19 — teal
-        .byte $9A              ; row 20 — light blue (credits)
-        .byte $9A              ; row 21
-        .byte $AA              ; row 22 — teal
-        .byte $96              ; row 23 — dark teal border
-        .byte $92              ; row 24 — invisible
-        .byte $92              ; row 25
-        .byte $92              ; row 26
-        .byte $92              ; row 27
-        .byte $92              ; row 28
-        .byte $92              ; row 29
+        .byte $9C              ; row 18 — bright blue
+        .byte $9A              ; row 19 — light blue
+        .byte $96              ; row 20 — dark teal
+        .byte $AA              ; row 21 — teal
+        .byte $96              ; row 22 — dark teal
+        .byte $94              ; row 23 — near-invisible
 
 ; ============================================================
-; Set VBXE palette entries to C64-accurate RGB values.
-; With XCOLOR=1, all 8 bits of a colour register are used
-; as a direct palette index.
+; Palette setup
 ; ============================================================
 set_palette:
         lda #$00
-        sta PSEL               ; palette 0
+        sta VBXE_PSEL
 
-        ; --- Grayscale range ($0x) → blue gradient ---
-        ; These affect any screen using default grey colours.
+        ; Grayscale ($0x) → blue gradient
+        ldx #0
+graylp: lda gray_idx,x
+        sta VBXE_CSEL
+        lda gray_r,x
+        sta VBXE_CR
+        lda gray_g,x
+        sta VBXE_CG
+        lda gray_b,x
+        sta VBXE_CB
+        inx
+        cpx #8
+        bne graylp
 
-        ; $00 → dark navy
-        lda #$00
-        sta CSEL
-        lda #5
-        sta CR
-        lda #5
-        sta CG
-        lda #35
-        sta CB
-
-        ; $02
-        lda #$02
-        sta CSEL
-        lda #8
-        sta CR
-        lda #10
-        sta CG
-        lda #44
-        sta CB
-
-        ; $04
-        lda #$04
-        sta CSEL
-        lda #14
-        sta CR
-        lda #18
-        sta CG
-        lda #54
-        sta CB
-
-        ; $06
-        lda #$06
-        sta CSEL
-        lda #22
-        sta CR
-        lda #28
-        sta CG
-        lda #64
-        sta CB
-
-        ; $08
-        lda #$08
-        sta CSEL
-        lda #32
-        sta CR
-        lda #40
-        sta CG
-        lda #76
-        sta CB
-
-        ; $0A
-        lda #$0A
-        sta CSEL
-        lda #45
-        sta CR
-        lda #55
-        sta CG
-        lda #88
-        sta CB
-
-        ; $0C
-        lda #$0C
-        sta CSEL
-        lda #62
-        sta CR
-        lda #74
-        sta CG
-        lda #102
-        sta CB
-
-        ; $0E → bright cyan-white
-        lda #$0E
-        sta CSEL
-        lda #82
-        sta CR
-        lda #100
-        sta CG
-        lda #118
-        sta CB
-
-        ; --- Purple range ($5x) ---
-
-        ; $56 → deep purple
-        lda #$56
-        sta CSEL
-        lda #52
-        sta CR
-        lda #18
-        sta CG
-        lda #64
-        sta CB
-
-        ; $58 → purple-blue
-        lda #$58
-        sta CSEL
-        lda #44
-        sta CR
-        lda #26
-        sta CG
-        lda #76
-        sta CB
-
-        ; --- Blue range ($7x, $9x) ---
-
-        ; $7A → blue
-        lda #$7A
-        sta CSEL
-        lda #30
-        sta CR
-        lda #35
-        sta CG
-        lda #88
-        sta CB
-
-        ; $92 → dark blue (attribute map background)
-        lda #$92
-        sta CSEL
-        lda #10
-        sta CR
-        lda #10
-        sta CG
-        lda #48
-        sta CB
-
-        ; $94 → standard Atari blue
-        lda #$94
-        sta CSEL
-        lda #20
-        sta CR
-        lda #18
-        sta CG
-        lda #58
-        sta CB
-
-        ; $96 → dark teal
-        lda #$96
-        sta CSEL
-        lda #28
-        sta CR
-        lda #30
-        sta CG
-        lda #68
-        sta CB
-
-        ; $98
-        lda #$98
-        sta CSEL
-        lda #36
-        sta CR
-        lda #40
-        sta CG
-        lda #78
-        sta CB
-
-        ; $9A → light blue
-        lda #$9A
-        sta CSEL
-        lda #48
-        sta CR
-        lda #55
-        sta CG
-        lda #92
-        sta CB
-
-        ; $9C
-        lda #$9C
-        sta CSEL
-        lda #60
-        sta CR
-        lda #68
-        sta CG
-        lda #104
-        sta CB
-
-        ; $9E → bright blue
-        lda #$9E
-        sta CSEL
-        lda #75
-        sta CR
-        lda #82
-        sta CG
-        lda #116
-        sta CB
-
-        ; --- Cyan range ($Ax) ---
-
-        ; $AA → teal
-        lda #$AA
-        sta CSEL
-        lda #18
-        sta CR
-        lda #70
-        sta CG
-        lda #78
-        sta CB
-
-        ; $AC → bright cyan
-        lda #$AC
-        sta CSEL
-        lda #30
-        sta CR
-        lda #85
-        sta CG
-        lda #88
-        sta CB
-
-        ; $AE → white-cyan
-        lda #$AE
-        sta CSEL
-        lda #52
-        sta CR
-        lda #102
-        sta CG
-        lda #100
-        sta CB
-
+        ; Coloured entries
+        ldx #0
+clrlp:  lda col_idx,x
+        beq paldone
+        sta VBXE_CSEL
+        lda col_r,x
+        sta VBXE_CR
+        lda col_g,x
+        sta VBXE_CG
+        lda col_b,x
+        sta VBXE_CB
+        inx
+        bne clrlp
+paldone:
         rts
 
-; ============================================================
-; INITAD trigger
+gray_idx: .byte $00,$02,$04,$06,$08,$0A,$0C,$0E
+gray_r:   .byte   5,  8, 14, 22, 32, 45, 62, 82
+gray_g:   .byte   5, 10, 18, 28, 40, 55, 74,100
+gray_b:   .byte  35, 44, 54, 64, 76, 88,102,118
+
+col_idx:  .byte $56,$58,$7A,$92,$94,$96,$98,$9A,$9C,$9E,$AA,$AC,$AE,$00
+col_r:    .byte  52, 44, 30, 10, 20, 28, 36, 48, 60, 75, 18, 30, 52
+col_g:    .byte  18, 26, 35, 10, 18, 30, 40, 55, 68, 82, 70, 85,102
+col_b:    .byte  64, 76, 88, 48, 58, 68, 78, 92,104,116, 78, 88,100
+
 ; ============================================================
         org $02E2
         .word vbxe_init
