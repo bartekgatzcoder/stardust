@@ -1,131 +1,99 @@
-# Starquake (Atari XL) — Disassembly Notes
+# Starquake (Atari XL) v2 — Disassembly Notes
 
-## XEX File Structure
+## XEX Structure
 
-| Segment | File Offset | Load Address | End Address | Size (bytes) | Content |
-|---------|-------------|-------------|-------------|--------------|---------|
-| 1 | `$0002` | `$0A86` | `$0ADF` | 90 | Loader / title screen display list + init |
-| 2 | `$0062` | `$02E0` | `$02E3` | 4 | DOS run address vector |
-| 3 | `$006C` | `$0AF0` | `$A87F` | 40,336 | Main game code + data |
+| Seg | Load Address | End | Size | Content |
+|-----|-------------|------|------|---------|
+| 1 | `$2300` | `$62FF` | 16,384 | Game code + data (relocated to `$0580-$457F`) |
+| 2 | `$6300` | `$BB7F` | 22,656 | Game code + data (relocated to `$4580-$9DFF`) |
+| 3 | `$BC00` | `$BC1D` | 30 | RUN routine — copies seg 1+2 down by `$1D80` |
+| 4 | `$02E0` | `$02E1` | 2 | RUNAD → `$BC00` |
 
-**Total file size**: 40,448 bytes
+**No loader, no copy protection, no INIT segments.**
 
-## Memory Map
+## Startup Flow
+
+1. `RUN` at `$BC00` copies `$2300-$BBFF` → `$0580-$9EFF` (offset -`$1D80`)
+2. `JMP $05B9` — sets initial colours, then falls into main init at `$0600`
+
+## Runtime Address Mapping
+
+All disassembled addresses are **load addresses**. Subtract `$1D80` for runtime:
 
 ```
-$0080-$00FF  Zero-page variables (game state, pointers)
-$0A86-$0A92  Display list (title screen)
-$0A93-$0ADF  Title screen data + INIT1 routine
-$0AF0-$0BD5  Early game code / data
-$0BD6-$????  VBI handler (immediate VBI)
-$1A15-$????  Entity initialization
-$3388-$????  Game state setup
-$3672-$37xx  Secondary game loop (entity updates + sound)
-$4150-$4C25  Tile/entity lookup tables (~2,772 bytes)
-$4Cxx-$52xx  Additional tile/map data (~1,644 bytes)
-$5xxx-$6xxx  Compressed/packed game data (~1,564 bytes)
-$6xxx-$7xxx  Level map data or tile graphics (~6,021 bytes)
-$88xx-$97xx  Sprite shapes or screen data (~4,068 bytes)
-$A358        Game initialization entry
-$A381        Main display kernel (DMACTL + VCOUNT sync)
-$A38E        VBI/DLI vector setup
-$A3C6        DLI handler (color-splitting)
-$A800        Post-decryption entry (copy protection passed)
-$A845        RUN entry point (copy-protection checksum)
+runtime = loaded - $1D80
+$2300 → $0580 (start of relocated code)
+$BBFF → $9E7F (end of relocated code)
 ```
 
-## Display System
+## Title Screen
 
-### Display List (Title Screen — $0A86)
+### Display
+
+- **ANTIC mode `$F`** (GR.8 hires bitmap), 320×192, 1 bit/pixel
+- Screen data at runtime `$A1F0` (loaded: not directly visible — generated at runtime)
+- Display list at runtime `$395E` (loaded `$56DE`)
+- 3× blank-8 + 192× mode F + JVB = 24 + 192 = 216 scanlines
+- LMS reload at line 91 → `$B000` (page boundary crossing)
+- DLIs at lines 47, 94, 144, 190
+
+### Colours (set at entry point `$05B9`)
+
+| Register | Value | Meaning |
+|----------|-------|---------|
+| COLBK (`$D01A`) | `$00` | Black border |
+| COLOR4 (`$02C8`) | `$00` | Black border shadow |
+| COLPF1 (`$D017`) | `$CA` | Green, luma 10 |
+| COLOR1 (`$02C5`) | `$CA` | COLPF1 shadow |
+
+In ANTIC mode F hires: lit pixels = COLPF1 luminance + COLPF2 hue.
+Default COLPF2 = `$00` (black). Result: greenish-grey on black.
+
+### DLI Handler (runtime `$0BC5`)
+
+Changes colours mid-screen — responsible for any colour variation
+between screen sections.
+
+### VBI Handler (runtime `$0BD6`)
+
+Immediate VBI — runs game logic every frame.
+
+## Init Sequence (runtime `$0600`)
+
 ```
-$0A86: $70 $70 $70 $70    — 4× blank 8 scanlines
-$0A8A: $46 $93 $0A        — ANTIC mode 6 (20-col text) + LMS → $0A93
-$0A8D: $70 $70            — 2× blank 8 scanlines
-$0A8F: $02                — ANTIC mode 2 (normal text)
-$0A90: $41 $86 $0A        — JVB → $0A86
+LDA $D40B       ; read VCOUNT
+STA $3B
+LDA $D20A       ; read random
+STA $3C
+LDX #$FF
+TXS             ; reset stack
+JSR $0B8D       ; ← sets up display list, DLI, VBI, NMIEN
+JSR $20C5       ; further init
+...
+JSR $09E9       ; more setup
+...clear memory, init entities...
+JSR $337E
+JSR $121A
+JSR $1990
+...game loop...
 ```
 
-### DLI Handler ($A3C6)
-- Waits for WSYNC
-- Loads color from `ICPTHz` (zero-page $27)
-- Writes to COLPF2
-- Calls subroutine at `$33FD`
-- Acknowledges NMI via NMIST, returns with RTI
+## Key Subroutine: Display Setup (`$0B8D`)
 
-### Main Kernel ($A381)
 ```
-LA381: STA DMACTL        — write DMA control
-       ...               — VBI/DLI vector setup
-LA3B8: LDA VCOUNT        — poll for scanline $80 (line 256)
-       CMP #$80
-       BNE LA3B8
-       LDA #$3A          — DMACTL: normal playfield + PM DMA
-       CLI               — enable interrupts
-       BNE LA381         — loop (always taken)
+JSR $0B7B           ; wait for VCOUNT sync
+LDA #$39
+STA $D403           ; DLISTH = $39
+LDA #$5E
+STA $D402           ; DLISTL = $5E → display list at $395E
+LDA #$C5
+STA $0200           ; VDSLST low → DLI handler at $0BC5
+LDA #$0B
+STA $0201           ; VDSLST high
+LDA #$D6
+STA $0222           ; VVBLKI low → VBI handler at $0BD6
+LDA #$0B
+STA $0223           ; VVBLKI high
+LDA #$C0
+STA $D40E           ; NMIEN = $C0 (DLI + VBI enabled)
 ```
-
-## Player/Missile Graphics
-
-### Registers Found
-| Register | Address | Usage |
-|----------|---------|-------|
-| HPOSP0 | `$D000` | Horizontal position — zeroed during init (hides player 0) |
-| PCOLR0 | `$02C0` | Indexed access `PCOLR0,X` / `PCOLR0,Y` — 16-slot entity color table |
-| COLPM0 | `$D012` | Written with `ICPTHz OR #$0E` |
-| COLPM1 | `$D013` | Set to `#$0E` (bright white) |
-| DMACTL | `$D400` | `$3A` = standard playfield + player/missile DMA |
-| SDMCTL | `$022F` | Set to `$00` in copy-protection fail path |
-
-### Not Found in Static Disassembly
-- PMBASE (`$D407`) — likely set in VBI or decrypted code
-- GRAFP0-3 (`$D00C-$D00F`) — PMG shape data probably DMA'd, not CPU-written
-- SIZEP0-3 (`$D008-$D00B`)
-- GRACTL (`$D01D`)
-- CHBAS/CHBASE (`$02F4`/`$D409`)
-
-This suggests the VBI handler at `$0BD6` manages most PMG operations, and some code regions are encrypted/obfuscated at load time.
-
-## Code vs Data Ratio
-
-| Type | Lines | Percentage |
-|------|-------|------------|
-| Data (`.byte`) | 31,152 | 86.3% |
-| Instructions | 3,815 | 10.6% |
-| Labels/equates/directives | 1,107 | 3.1% |
-
-**69 undocumented opcodes** found — indicates encrypted or packed code regions that are decrypted at runtime.
-
-## Copy Protection
-
-The `RUN` entry point at `$A845`:
-1. Checksums bytes `$0A86`–`$0ADF` (segment 1)
-2. Expects result `$DE`
-3. **Pass**: Jumps to `$A800` — decrypts/copies code, warm-starts via `WARMSV`
-4. **Fail**: Issues SIO format command (`DCOMND=$21`), disables display, infinite random-color loop
-
-**Warning**: The copy protection includes a destructive anti-tamper mechanism (disk format command on failure).
-
-## Label Statistics
-
-| Category | Count |
-|----------|-------|
-| Named OS equates | 175 |
-| Auto-generated equates (Lxxxx) | 120 |
-| Auto-generated code labels | 778 |
-| Named code labels (INIT1, RUNAD, RUN) | 3 |
-| **Total labels** | **1,076** |
-
-## Obfuscated Regions
-
-The area around `$A38E` contains undocumented opcodes (RRA, ANC, NOP $xx,X) that are likely decrypted at runtime before VBI/DLI vectors become active. Static disassembly of these regions shows raw byte interpretation.
-
-## Disassembler Used
-
-**pcrow/atari_8bit_utils disasm** ([GitHub](https://github.com/pcrow/atari_8bit_utils/tree/main/disasm))
-- Multi-pass code-flow tracing
-- Built-in Atari OS labels (atari, cio, float)
-- MADS assembler syntax output
-- Undocumented 6502 opcode support
-- XEX format auto-detection
-
-**Note**: A debug assertion in the original disasm.c (`addr == 0x8D` crash) was patched to complete disassembly. This is a bug in the disassembler triggered by the game's use of zero-page address `$8D`.
