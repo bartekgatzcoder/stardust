@@ -1,16 +1,14 @@
 ; VBXE Hook Code for Starquake
 ;
-; Hook points (in the $20C5 title/screen cycling loop):
-;   $20CA — JSR $356C: title screen setup → enable VBXE
-;   $20F2 — LDX #$00 / JSR $2639: next screen init → disable VBXE
+; The game zeroes pages 4-5 ($0400-$057F) during gameplay.
+; Hook trampolines must live in the GAME's own runtime
+; space. $9E00-$9E7F is unused (beyond game data end).
 ;
-; $20CA hook uses JSR-redirect: the original JSR $356C
-; is replaced with JSR tsetup. tsetup enables VBXE then
-; JMPs to $356C. When $356C does RTS, it returns to
-; $20CD (the return address pushed by the ORIGINAL JSR).
-; Stack-neutral — no extra frames.
-;
-; $20F2 hook uses the same pattern for $2639.
+; Strategy:
+;   - INIT/postrel at $0400 (one-time, can be destroyed)
+;   - postrel copies trampoline code to $9E00 at runtime
+;   - Patches $20CA/$20F2 to call $9E00/$9E0D
+;   - $9E00 survives gameplay
 
 VBXE_VC     = $D640
 VBXE_ID     = $10
@@ -18,10 +16,10 @@ VBXE_ID     = $10
 GAME_ENTRY  = $05B9
 RELOC_JMP   = $BC1A
 
-; Addresses in the $20C5 title/screen loop
-TENAB_ADDR  = $20CA      ; JSR $356C
-TENAB_ORIG  = $356C
-TDISAB_ADDR = $20F2      ; LDX #$00 at $20F2, JSR $2639 at $20F4
+TENAB_ADDR  = $20CA      ; JSR $356C → JSR tsetup
+TDISAB_ADDR = $20F2      ; LDX #$00 / JSR $2639 → JSR tdone
+
+SAFE_ADDR   = $9E00      ; unused game space for runtime hooks
 
         org $0400
 
@@ -39,64 +37,70 @@ dodet
         rts
 
 ; ---- POST-RELOC ----
+; Copies trampoline code to $9E00, patches hook sites,
+; then starts the game. This code at $0400 will be
+; destroyed during gameplay — that's fine.
 postrel
-        ; $20CA: replace JSR $356C with JSR tsetup
-        ; tsetup does VBXE enable then JMP $356C.
-        ; $356C's RTS pops $20CC → continues at $20CD.
-        lda #<tsetup
-        sta TENAB_ADDR+1
-        lda #>tsetup
-        sta TENAB_ADDR+2
-        ; (opcode at $20CA stays $20 = JSR, unchanged)
+        ; Copy trampoline code to $9E00
+        ldx #tramp_len-1
+cloop   lda tramp_code,x
+        sta SAFE_ADDR,x
+        dex
+        bpl cloop
 
-        ; $20F2: replace LDX #$00 / JSR $2639 with
-        ; JSR tdone / NOP NOP.
-        ; tdone does VBXE disable, LDX #0, JMP $2639.
-        ; $2639's RTS pops $20F4 → continues at $20F5.
-        ; But $20F5 has the old target bytes ($39 $26),
-        ; which would execute as AND $26. BAD!
-        ;
-        ; Instead: replace all 5 bytes $20F2-$20F6 with
-        ; JSR tdone + NOP + NOP. tdone does everything
-        ; and JMPs to $20F7 directly.
-        lda #$20          ; JSR opcode
+        ; Patch $20CA: JSR $356C → JSR $9E00 (tsetup)
+        lda #<SAFE_ADDR
+        sta TENAB_ADDR+1
+        lda #>SAFE_ADDR
+        sta TENAB_ADDR+2
+
+        ; Patch $20F2: LDX#0/JSR$2639 → JSR $9E0D/NOP/NOP
+        lda #$20
         sta TDISAB_ADDR
-        lda #<tdone
+        lda #<[SAFE_ADDR+tsetup_len]
         sta TDISAB_ADDR+1
-        lda #>tdone
+        lda #>[SAFE_ADDR+tsetup_len]
         sta TDISAB_ADDR+2
-        lda #$EA          ; NOP
+        lda #$EA
         sta TDISAB_ADDR+3
         sta TDISAB_ADDR+4
 
         jmp GAME_ENTRY
 
-; ---- TITLE ENABLE ----
-; Called via JSR from $20CA. Enables VBXE then falls
-; into $356C. When $356C does RTS, it returns to $20CD
-; (the address pushed by the JSR at $20CA).
-tsetup
+; ---- Trampoline code (copied to $9E00 at runtime) ----
+; Must be position-independent relative to SAFE_ADDR.
+tramp_code
+
+; tsetup: enable VBXE, then jump to title builder.
+; Called via JSR from $20CA. $356C's RTS returns to $20CD.
+t_tsetup = *-tramp_code
         lda #$00
-        sta VBXE_VC+1     ; XDL_ADR0 = 0
-        sta VBXE_VC+2     ; XDL_ADR1 = 0
-        sta VBXE_VC+3     ; XDL_ADR2 = 0
+        sta VBXE_VC+1     ; XDL_ADR0
+        sta VBXE_VC+2     ; XDL_ADR1
+        sta VBXE_VC+3     ; XDL_ADR2
         lda #$01
         sta VBXE_VC       ; XDL enabled
-        jmp TENAB_ORIG    ; -> $356C
+        jmp $356C
+tsetup_len = *-tramp_code
 
-; ---- NEXT SCREEN DISABLE ----
-; Called via JSR from $20F2. Disables VBXE, does the
-; original LDX #0, then JMPs to $2639. When $2639
-; does RTS, it returns to $20F5 — but we NOPed those
-; bytes, so it falls through to $20F7. Clean.
-tdone
+; tdone: disable VBXE, then jump to next-screen init.
+; Called via JSR from $20F2. $2639's RTS returns to
+; $20F5 (NOP NOP → $20F7).
+t_tdone = *-tramp_code-tsetup_len
         lda #$00
-        sta VBXE_VC
+        sta VBXE_VC       ; XDL disabled
         ldx #$00
         jmp $2639
 
+tramp_len = *-tramp_code
+
+        .print "Trampoline: ", tramp_len, " bytes at $9E00"
+
         .if * > $0580
         .error "Hook segment exceeds $0580!"
+        .endif
+        .if tramp_len > $80
+        .error "Trampoline too large for $9E00-$9E7F!"
         .endif
 
 ; INIT vector

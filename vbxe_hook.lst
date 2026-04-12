@@ -3,105 +3,110 @@ vbxe_hook.asm -o:vbxe_hook.xex -l
 Source: vbxe_hook.asm
      1 				; VBXE Hook Code for Starquake
      2 				;
-     3 				; Hook points (in the $20C5 title/screen cycling loop):
-     4 				;   $20CA — JSR $356C: title screen setup → enable VBXE
-     5 				;   $20F2 — LDX #$00 / JSR $2639: next screen init → disable VBXE
+     3 				; The game zeroes pages 4-5 ($0400-$057F) during gameplay.
+     4 				; Hook trampolines must live in the GAME's own runtime
+     5 				; space. $9E00-$9E7F is unused (beyond game data end).
      6 				;
-     7 				; $20CA hook uses JSR-redirect: the original JSR $356C
-     8 				; is replaced with JSR tsetup. tsetup enables VBXE then
-     9 				; JMPs to $356C. When $356C does RTS, it returns to
-    10 				; $20CD (the return address pushed by the ORIGINAL JSR).
-    11 				; Stack-neutral — no extra frames.
-    12 				;
-    13 				; $20F2 hook uses the same pattern for $2639.
-    14
-    15 = D640			VBXE_VC     = $D640
-    16 = 0010			VBXE_ID     = $10
-    17
-    18 = 05B9			GAME_ENTRY  = $05B9
-    19 = BC1A			RELOC_JMP   = $BC1A
-    20
-    21 				; Addresses in the $20C5 title/screen loop
-    22 = 20CA			TENAB_ADDR  = $20CA      ; JSR $356C
-    23 = 356C			TENAB_ORIG  = $356C
-    24 = 20F2			TDISAB_ADDR = $20F2      ; LDX #$00 at $20F2, JSR $2639 at $20F4
+     7 				; Strategy:
+     8 				;   - INIT/postrel at $0400 (one-time, can be destroyed)
+     9 				;   - postrel copies trampoline code to $9E00 at runtime
+    10 				;   - Patches $20CA/$20F2 to call $9E00/$9E0D
+    11 				;   - $9E00 survives gameplay
+    12
+    13 = D640			VBXE_VC     = $D640
+    14 = 0010			VBXE_ID     = $10
+    15
+    16 = 05B9			GAME_ENTRY  = $05B9
+    17 = BC1A			RELOC_JMP   = $BC1A
+    18
+    19 = 20CA			TENAB_ADDR  = $20CA      ; JSR $356C → JSR tsetup
+    20 = 20F2			TDISAB_ADDR = $20F2      ; LDX #$00 / JSR $2639 → JSR tdone
+    21
+    22 = 9E00			SAFE_ADDR   = $9E00      ; unused game space for runtime hooks
+    23
+    24 				        org $0400
     25
-    26 				        org $0400
-    27
-    28 				; ---- INIT ----
-    29 				hook_init
-    30 FFFF> 0400-0453> AD 40 +         lda VBXE_VC
-    31 0403 C9 10		        cmp #VBXE_ID
-    32 0405 F0 01		        beq dodet
-    33 0407 60			        rts
-    34 0408			dodet
-    35 0408 A9 13		        lda #<postrel
-    36 040A 8D 1B BC		        sta RELOC_JMP+1
-    37 040D A9 04		        lda #>postrel
-    38 040F 8D 1C BC		        sta RELOC_JMP+2
-    39 0412 60			        rts
-    40
-    41 				; ---- POST-RELOC ----
-    42 0413			postrel
-    43 				        ; $20CA: replace JSR $356C with JSR tsetup
-    44 				        ; tsetup does VBXE enable then JMP $356C.
-    45 				        ; $356C's RTS pops $20CC → continues at $20CD.
-    46 0413 A9 37		        lda #<tsetup
-    47 0415 8D CB 20		        sta TENAB_ADDR+1
-    48 0418 A9 04		        lda #>tsetup
-    49 041A 8D CC 20		        sta TENAB_ADDR+2
-    50 				        ; (opcode at $20CA stays $20 = JSR, unchanged)
-    51
-    52 				        ; $20F2: replace LDX #$00 / JSR $2639 with
-    53 				        ; JSR tdone / NOP NOP.
-    54 				        ; tdone does VBXE disable, LDX #0, JMP $2639.
-    55 				        ; $2639's RTS pops $20F4 → continues at $20F5.
-    56 				        ; But $20F5 has the old target bytes ($39 $26),
-    57 				        ; which would execute as AND $26. BAD!
-    58 				        ;
-    59 				        ; Instead: replace all 5 bytes $20F2-$20F6 with
-    60 				        ; JSR tdone + NOP + NOP. tdone does everything
-    61 				        ; and JMPs to $20F7 directly.
-    62 041D A9 20		        lda #$20          ; JSR opcode
-    63 041F 8D F2 20		        sta TDISAB_ADDR
-    64 0422 A9 4A		        lda #<tdone
-    65 0424 8D F3 20		        sta TDISAB_ADDR+1
-    66 0427 A9 04		        lda #>tdone
-    67 0429 8D F4 20		        sta TDISAB_ADDR+2
-    68 042C A9 EA		        lda #$EA          ; NOP
-    69 042E 8D F5 20		        sta TDISAB_ADDR+3
-    70 0431 8D F6 20		        sta TDISAB_ADDR+4
-    71
-    72 0434 4C B9 05		        jmp GAME_ENTRY
+    26 				; ---- INIT ----
+    27 				hook_init
+    28 FFFF> 0400-045E> AD 40 +         lda VBXE_VC
+    29 0403 C9 10		        cmp #VBXE_ID
+    30 0405 F0 01		        beq dodet
+    31 0407 60			        rts
+    32 0408			dodet
+    33 0408 A9 13		        lda #<postrel
+    34 040A 8D 1B BC		        sta RELOC_JMP+1
+    35 040D A9 04		        lda #>postrel
+    36 040F 8D 1C BC		        sta RELOC_JMP+2
+    37 0412 60			        rts
+    38
+    39 				; ---- POST-RELOC ----
+    40 				; Copies trampoline code to $9E00, patches hook sites,
+    41 				; then starts the game. This code at $0400 will be
+    42 				; destroyed during gameplay — that's fine.
+    43 0413			postrel
+    44 				        ; Copy trampoline code to $9E00
+    45 0413 A2 1C		        ldx #tramp_len-1
+    46 0415 BD 42 04		cloop   lda tramp_code,x
+    47 0418 9D 00 9E		        sta SAFE_ADDR,x
+    48 041B CA			        dex
+    49 041C 10 F7		        bpl cloop
+    50
+    51 				        ; Patch $20CA: JSR $356C → JSR $9E00 (tsetup)
+    52 041E A9 00		        lda #<SAFE_ADDR
+    53 0420 8D CB 20		        sta TENAB_ADDR+1
+    54 0423 A9 9E		        lda #>SAFE_ADDR
+    55 0425 8D CC 20		        sta TENAB_ADDR+2
+    56
+    57 				        ; Patch $20F2: LDX#0/JSR$2639 → JSR $9E0D/NOP/NOP
+    58 0428 A9 20		        lda #$20
+    59 042A 8D F2 20		        sta TDISAB_ADDR
+    60 042D A9 13		        lda #<[SAFE_ADDR+tsetup_len]
+    61 042F 8D F3 20		        sta TDISAB_ADDR+1
+    62 0432 A9 9E		        lda #>[SAFE_ADDR+tsetup_len]
+    63 0434 8D F4 20		        sta TDISAB_ADDR+2
+    64 0437 A9 EA		        lda #$EA
+    65 0439 8D F5 20		        sta TDISAB_ADDR+3
+    66 043C 8D F6 20		        sta TDISAB_ADDR+4
+    67
+    68 043F 4C B9 05		        jmp GAME_ENTRY
+    69
+    70 				; ---- Trampoline code (copied to $9E00 at runtime) ----
+    71 				; Must be position-independent relative to SAFE_ADDR.
+    72 0442			tramp_code
     73
-    74 				; ---- TITLE ENABLE ----
-    75 				; Called via JSR from $20CA. Enables VBXE then falls
-    76 				; into $356C. When $356C does RTS, it returns to $20CD
-    77 				; (the address pushed by the JSR at $20CA).
-    78 0437			tsetup
-    79 0437 A9 00		        lda #$00
-    80 0439 8D 41 D6		        sta VBXE_VC+1     ; XDL_ADR0 = 0
-    81 043C 8D 42 D6		        sta VBXE_VC+2     ; XDL_ADR1 = 0
-    82 043F 8D 43 D6		        sta VBXE_VC+3     ; XDL_ADR2 = 0
-    83 0442 A9 01		        lda #$01
-    84 0444 8D 40 D6		        sta VBXE_VC       ; XDL enabled
-    85 0447 4C 6C 35		        jmp TENAB_ORIG    ; -> $356C
-    86
-    87 				; ---- NEXT SCREEN DISABLE ----
-    88 				; Called via JSR from $20F2. Disables VBXE, does the
-    89 				; original LDX #0, then JMPs to $2639. When $2639
-    90 				; does RTS, it returns to $20F5 — but we NOPed those
-    91 				; bytes, so it falls through to $20F7. Clean.
-    92 044A			tdone
-    93 044A A9 00		        lda #$00
-    94 044C 8D 40 D6		        sta VBXE_VC
-    95 044F A2 00		        ldx #$00
-    96 0451 4C 39 26		        jmp $2639
-    97
-    98 				        .if * > $0580
-    99 				        .error "Hook segment exceeds $0580!"
-   100 				        .endif
-   101
-   102 				; INIT vector
-   103 0454			        org $02E2
-   104 02E2-02E3> 00 04		        .word hook_init
+    74 				; tsetup: enable VBXE, then jump to title builder.
+    75 				; Called via JSR from $20CA. $356C's RTS returns to $20CD.
+    76 = 0000			t_tsetup = *-tramp_code
+    77 0442 A9 00		        lda #$00
+    78 0444 8D 41 D6		        sta VBXE_VC+1     ; XDL_ADR0
+    79 0447 8D 42 D6		        sta VBXE_VC+2     ; XDL_ADR1
+    80 044A 8D 43 D6		        sta VBXE_VC+3     ; XDL_ADR2
+    81 044D A9 01		        lda #$01
+    82 044F 8D 40 D6		        sta VBXE_VC       ; XDL enabled
+    83 0452 4C 6C 35		        jmp $356C
+    84 = 0013			tsetup_len = *-tramp_code
+    85
+    86 				; tdone: disable VBXE, then jump to next-screen init.
+    87 				; Called via JSR from $20F2. $2639's RTS returns to
+    88 				; $20F5 (NOP NOP → $20F7).
+    89 = 0000			t_tdone = *-tramp_code-tsetup_len
+    90 0455 A9 00		        lda #$00
+    91 0457 8D 40 D6		        sta VBXE_VC       ; XDL disabled
+    92 045A A2 00		        ldx #$00
+    93 045C 4C 39 26		        jmp $2639
+    94
+    95 = 001D			tramp_len = *-tramp_code
+    96
+    97 				        .print "Trampoline: ", tramp_len, " bytes at $9E00"
+    97 				Trampoline: $001D bytes at $9E00
+    98
+    99 				        .if * > $0580
+   100 				        .error "Hook segment exceeds $0580!"
+   101 				        .endif
+   102 				        .if tramp_len > $80
+   103 				        .error "Trampoline too large for $9E00-$9E7F!"
+   104 				        .endif
+   105
+   106 				; INIT vector
+   107 045F			        org $02E2
+   108 02E2-02E3> 00 04		        .word hook_init
