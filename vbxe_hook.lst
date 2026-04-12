@@ -3,71 +3,94 @@ vbxe_hook.asm -o:vbxe_hook.xex -l
 Source: vbxe_hook.asm
      1 				; VBXE Hook Code for Starquake
      2 				; Loads AFTER the game. INIT patches the game
-     3 				; to enable VBXE overlay on title screen entry.
-     4 				;
-     5 				; Hook chain:
-     6 				;   INIT → patches relocator JMP at $BC1A
-     7 				;   relocator runs → JMPs to postrel
-     8 				;   postrel → patches $0BBF with JMP tsetup
-     9 				;   game reaches title screen → $0BBF fires
-    10 				;   tsetup → enables VBXE, continues game
-    11
-    12 = D640			VBXE_VC    = $D640
-    13 = 0010			VBXE_ID    = $10
-    14
-    15 = 0222			VVBLKI     = $0222
-    16 = 05B9			GAME_ENTRY = $05B9
-    17 = 0BD6			GAME_VBI   = $0BD6
+     3 				; to enable VBXE overlay on title screen entry
+     4 				; and disable it when the next screen starts.
+     5 				;
+     6 				; Hook points (all in post-relocation runtime space):
+     7 				;   $0BBF — title screen is ready to display
+     8 				;   $20F2 — title screen done, next screen init begins
+     9 				;
+    10 				; Both fire-to-start and music-end paths converge at $20F2
+    11 				; before calling the next-screen initializer at $2639.
+    12
+    13 = D640			VBXE_VC    = $D640
+    14 = 0010			VBXE_ID    = $10
+    15
+    16 = 022F			SDMCTL     = $022F
+    17 = 05B9			GAME_ENTRY = $05B9
     18 = BC1A			RELOC_JMP  = $BC1A
-    19 = 0BBF			HOOK_ADDR  = $0BBF
-    20 = 0B81			HOOK_CONT  = $0B81
-    21 = 022F			SDMCTL     = $022F
-    22
-    23 				        org $0400
-    24
-    25 				; ---- INIT (called at XEX load, after game loaded) ----
-    26 				hook_init
-    27 				        ; Only patch if VBXE was detected (check core ver)
-    28 FFFF> 0400-0432> AD 40 +         lda VBXE_VC
-    29 0403 C9 10		        cmp #VBXE_ID
-    30 0405 F0 01		        beq dodet
-    31 0407 60			        rts
-    32 0408			dodet
-    33 				        ; Patch relocator JMP at $BC1A to go to postrel
-    34 0408 A9 13		        lda #<postrel
-    35 040A 8D 1B BC		        sta RELOC_JMP+1
-    36 040D A9 04		        lda #>postrel
-    37 040F 8D 1C BC		        sta RELOC_JMP+2
-    38 0412 60			        rts
-    39
-    40 				; ---- POST-RELOC (game relocated, now in runtime addresses) ----
-    41 0413			postrel
-    42 				        ; Patch title-ready point with JMP tsetup
-    43 0413 A9 4C		        lda #$4C          ; JMP opcode
-    44 0415 8D BF 0B		        sta HOOK_ADDR
-    45 0418 A9 25		        lda #<tsetup
-    46 041A 8D C0 0B		        sta HOOK_ADDR+1
-    47 041D A9 04		        lda #>tsetup
-    48 041F 8D C1 0B		        sta HOOK_ADDR+2
-    49 0422 4C B9 05		        jmp GAME_ENTRY
-    50
-    51 				; ---- TITLE SETUP (title screen is ready to display) ----
-    52 0425			tsetup
-    53 				        ; Enable VBXE XDL
-    54 0425 A9 01		        lda #$01
-    55 0427 8D 40 D6		        sta VBXE_VC
-    56
-    57 				        ; Do the original code at $0BBF:
-    58 				        ;   LDA #$3A / CLI / BNE $0B81
-    59 042A A9 3A		        lda #$3A
-    60 042C 8D 2F 02		        sta SDMCTL
-    61 042F 58			        cli
-    62 0430 4C 81 0B		        jmp HOOK_CONT
+    19
+    20 				; Title entry hook
+    21 = 0BBF			HOOK_ADDR  = $0BBF       ; LDA #$3A / CLI / BNE $0B81
+    22 = 0B81			HOOK_CONT  = $0B81
+    23
+    24 				; Title exit hook — next screen init
+    25 				; Original: LDX #$00 / JSR $2639 / LDA #$86 / JMP $3611
+    26 = 20F2			EXIT_ADDR  = $20F2
+    27 = 20F7			EXIT_CONT  = $20F7       ; first intact instruction after 3 patched bytes
+    28
+    29 				        org $0400
+    30
+    31 				; ---- INIT (called at XEX load) ----
+    32 				hook_init
+    33 FFFF> 0400-044E> AD 40 +         lda VBXE_VC
+    34 0403 C9 10		        cmp #VBXE_ID
+    35 0405 F0 01		        beq dodet
+    36 0407 60			        rts
+    37 0408			dodet
+    38 0408 A9 13		        lda #<postrel
+    39 040A 8D 1B BC		        sta RELOC_JMP+1
+    40 040D A9 04		        lda #>postrel
+    41 040F 8D 1C BC		        sta RELOC_JMP+2
+    42 0412 60			        rts
+    43
+    44 				; ---- POST-RELOC ----
+    45 0413			postrel
+    46 				        ; Patch title entry: $0BBF -> JMP tsetup
+    47 0413 A9 4C		        lda #$4C
+    48 0415 8D BF 0B		        sta HOOK_ADDR
+    49 0418 A9 34		        lda #<tsetup
+    50 041A 8D C0 0B		        sta HOOK_ADDR+1
+    51 041D A9 04		        lda #>tsetup
+    52 041F 8D C1 0B		        sta HOOK_ADDR+2
+    53
+    54 				        ; Patch next-screen init: $20F2 -> JMP tdone
+    55 0422 A9 4C		        lda #$4C
+    56 0424 8D F2 20		        sta EXIT_ADDR
+    57 0427 A9 42		        lda #<tdone
+    58 0429 8D F3 20		        sta EXIT_ADDR+1
+    59 042C A9 04		        lda #>tdone
+    60 042E 8D F4 20		        sta EXIT_ADDR+2
+    61
+    62 0431 4C B9 05		        jmp GAME_ENTRY
     63
-    64 				        .if * > $0580
-    65 				        .error "Hook segment exceeds $0580!"
-    66 				        .endif
-    67
-    68 				; INIT vector for this segment
-    69 0433			        org $02E2
-    70 02E2-02E3> 00 04		        .word hook_init
+    64 				; ---- TITLE ENTRY (enables VBXE overlay) ----
+    65 0434			tsetup
+    66 0434 A9 01		        lda #$01
+    67 0436 8D 40 D6		        sta VBXE_VC
+    68
+    69 				        ; Original code at $0BBF:
+    70 0439 A9 3A		        lda #$3A
+    71 043B 8D 2F 02		        sta SDMCTL
+    72 043E 58			        cli
+    73 043F 4C 81 0B		        jmp HOOK_CONT
+    74
+    75 				; ---- TITLE EXIT (disables VBXE overlay) ----
+    76 				; Replaces $20F2-$20F4 (LDX #$00 / JSR opcode).
+    77 				; Executes the overwritten instructions, then
+    78 				; continues at $20F7 (LDA #$86 / JMP $3611).
+    79 0442			tdone
+    80 0442 A9 00		        lda #$00
+    81 0444 8D 40 D6		        sta VBXE_VC       ; XDL disabled
+    82
+    83 0447 A2 00		        ldx #$00          ; original $20F2
+    84 0449 20 39 26		        jsr $2639         ; original $20F4
+    85 044C 4C F7 20		        jmp EXIT_CONT     ; -> $20F7
+    86
+    87 				        .if * > $0580
+    88 				        .error "Hook segment exceeds $0580!"
+    89 				        .endif
+    90
+    91 				; INIT vector
+    92 044F			        org $02E2
+    93 02E2-02E3> 00 04		        .word hook_init
