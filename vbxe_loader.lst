@@ -1,0 +1,176 @@
+mads 2.1.8
+vbxe_loader.asm -o:vbxe_loader.xex -l 
+Source: vbxe_loader.asm
+     1 				; VBXE Overlay Title Screen for Starquake
+     2 				; Clean implementation: pre-rendered 8bpp overlay
+     3 				; from C64 title screen data.
+     4 				;
+     5 				; XEX structure:
+     6 				;   [this segment: $8000, INIT=vbxe_load]
+     7 				;   [game XEX: untouched]
+     8 				;   [hook segment: $0400, INIT=hook_init]
+     9
+    10 				; ---- VBXE registers (base $D640, FX 1.xx) ----
+    11 = D640			VBXE      = $D640
+    12 = D640			VBXE_VC   = VBXE+$00  ; VIDEO_CONTROL (write) / CORE_VERSION (read)
+    13 = D641			VBXE_XA0  = VBXE+$01  ; XDL_ADR0
+    14 = D642			VBXE_XA1  = VBXE+$02  ; XDL_ADR1
+    15 = D643			VBXE_XA2  = VBXE+$03  ; XDL_ADR2
+    16 = D644			VBXE_CSEL = VBXE+$04
+    17 = D645			VBXE_PSEL = VBXE+$05
+    18 = D646			VBXE_CR   = VBXE+$06
+    19 = D647			VBXE_CG   = VBXE+$07
+    20 = D648			VBXE_CB   = VBXE+$08
+    21 = D65D			MEMAC_A   = VBXE+$1D  ; MEMAC-A bank select + MCE
+    22
+    23 				; ---- Zero page temporaries ----
+    24 = 00FB			ZSRC      = $FB        ; 2 bytes: RLE source pointer
+    25 = 00FD			ZDST      = $FD        ; 2 bytes: VRAM dest pointer
+    26
+    27 				; ---- Constants ----
+    28 = 0080			MEMAC_MCE = $80        ; MEMAC CPU enable bit
+    29 = 0004			OVL_BANK0 = 4          ; first VRAM bank for overlay ($10000/16K=4)
+    30 = 0007			NUM_COLORS = 7
+    31 = 0010			VBXE_ID   = $10        ; FX 1.xx core version
+    32
+    33 				; ===================================================
+    34 				; SEGMENT 1: Overlay data loader
+    35 				; Loads before the game. INIT decompresses overlay
+    36 				; to VBXE VRAM, writes XDL, sets palette.
+    37 				; Game segments then overwrite $8000+ — that's fine,
+    38 				; the data is already in VRAM.
+    39 				; ===================================================
+    40
+    41 				        org $8000
+    42
+    43 				; ---- Entry point (called via INIT vector) ----
+    44 				vbxe_load
+    45 				        ; Detect VBXE at $D640
+    46 FFFF> 8000-BAD7> AD 40 +         lda VBXE_VC
+    47 8003 C9 10		        cmp #VBXE_ID
+    48 8005 F0 01		        beq detected
+    49 8007 60			        rts              ; no VBXE, bail
+    50
+    51 8008			detected
+    52 				        ; Disable VBXE during setup
+    53 8008 A9 00		        lda #0
+    54 800A 8D 40 D6		        sta VBXE_VC
+    55
+    56 				        ; ---- Write XDL to VRAM $00000 ----
+    57 800D A9 80		        lda #MEMAC_MCE+0 ; bank 0
+    58 800F 8D 5D D6		        sta MEMAC_A
+    59
+    60 8012 A2 0C		        ldx #xdl_len-1
+    61 8014 BD 9D 80		wxdl    lda xdl_data,x
+    62 8017 9D 00 40		        sta $4000,x      ; VRAM $00000 via MEMAC
+    63 801A CA			        dex
+    64 801B 10 F7		        bpl wxdl
+    65
+    66 				        ; ---- Decompress RLE overlay to VRAM $10000 ----
+    67 801D A9 84		        lda #MEMAC_MCE+OVL_BANK0
+    68 801F 8D 5D D6		        sta MEMAC_A       ; bank 4 → VRAM $10000
+    69
+    70 8022 A9 BF		        lda #<rle_data
+    71 8024 85 FB		        sta ZSRC
+    72 8026 A9 80		        lda #>rle_data
+    73 8028 85 FC		        sta ZSRC+1
+    74 802A A9 00		        lda #$00
+    75 802C 85 FD		        sta ZDST
+    76 802E A9 40		        lda #$40
+    77 8030 85 FE		        sta ZDST+1        ; dest = $4000 (MEMAC window)
+    78
+    79 8032 A0 00		dloop   ldy #0
+    80 8034 B1 FB		        lda (ZSRC),y      ; count
+    81 8036 F0 31		        beq ddone          ; 0 = end of RLE
+    82 8038 AA			        tax                ; X = run length
+    83 8039 C8			        iny
+    84 803A B1 FB		        lda (ZSRC),y      ; value
+    85 803C 48			        pha                ; save value
+    86
+    87 				        ; Advance ZSRC by 2
+    88 803D 18			        clc
+    89 803E A5 FB		        lda ZSRC
+    90 8040 69 02		        adc #2
+    91 8042 85 FB		        sta ZSRC
+    92 8044 90 02		        bcc nosrhi
+    93 8046 E6 FC		        inc ZSRC+1
+    94 8048			nosrhi
+    95 8048 68			        pla                ; A = value
+    96 8049 A0 00		wloop   ldy #0
+    97 804B 91 FD		        sta (ZDST),y
+    98
+    99 				        ; Advance ZDST
+   100 804D E6 FD		        inc ZDST
+   101 804F D0 02		        bne nodshi
+   102 8051 E6 FE		        inc ZDST+1
+   103 8053			nodshi
+   104 				        ; Check if ZDST reached $8000 (end of 16K window)
+   105 8053 A4 FE		        ldy ZDST+1
+   106 8055 C0 80		        cpy #$80
+   107 8057 90 0B		        bcc nobnk
+   108
+   109 				        ; Switch to next MEMAC bank
+   110 8059 A0 00		        ldy #$00
+   111 805B 84 FD		        sty ZDST
+   112 805D A0 40		        ldy #$40
+   113 805F 84 FE		        sty ZDST+1        ; reset to $4000
+   114 8061 EE 5D D6		        inc MEMAC_A        ; next bank
+   115
+   116 8064 CA			nobnk   dex
+   117 8065 D0 E2		        bne wloop
+   118 8067 F0 C9		        beq dloop          ; next RLE pair
+   119
+   120 8069			ddone
+   121 				        ; ---- Disable MEMAC ----
+   122 8069 A9 00		        lda #0
+   123 806B 8D 5D D6		        sta MEMAC_A
+   124
+   125 				        ; ---- Set palette (palette 1, colors 1-7) ----
+   126 806E A9 01		        lda #1
+   127 8070 8D 44 D6		        sta VBXE_CSEL      ; start at color index 1
+   128 8073 8D 45 D6		        sta VBXE_PSEL      ; palette 1
+   129
+   130 8076 A2 00		        ldx #0
+   131 8078 BD AA 80		ploop   lda pal_data,x
+   132 807B 8D 46 D6		        sta VBXE_CR
+   133 807E E8			        inx
+   134 807F BD AA 80		        lda pal_data,x
+   135 8082 8D 47 D6		        sta VBXE_CG
+   136 8085 E8			        inx
+   137 8086 BD AA 80		        lda pal_data,x
+   138 8089 8D 48 D6		        sta VBXE_CB         ; auto-advances CSEL
+   139 808C E8			        inx
+   140 808D E0 15		        cpx #NUM_COLORS*3
+   141 808F 90 E7		        bcc ploop
+   142
+   143 				        ; ---- Set XDL address to $00000 ----
+   144 8091 A9 00		        lda #0
+   145 8093 8D 41 D6		        sta VBXE_XA0
+   146 8096 8D 42 D6		        sta VBXE_XA1
+   147 8099 8D 43 D6		        sta VBXE_XA2
+   148
+   149 				        ; Don't enable VIDEO_CONTROL yet.
+   150 				        ; The hook code enables it when the title
+   151 				        ; screen appears.
+   152 809C 60			        rts
+   153
+   154 				; ---- XDL data (13 bytes) ----
+   155 809D			xdl_data
+   156 809D 24 00 17 62 88 BF +         ins 'data/xdl.bin'
+   157 = 000D			xdl_len = *-xdl_data
+   158
+   159 				; ---- Palette data (21 bytes) ----
+   160 80AA			pal_data
+   161 80AA 00 00 00 FF FF FF +         ins 'data/palette.bin'
+   162
+   163 				; ---- RLE-compressed overlay (14873 bytes) ----
+   164 80BF			rle_data
+   165 80BF FF 01 6C 01 E9 04 +         ins 'data/overlay_rle.bin'
+   166
+   167 = BAD8			endload = *
+   168 				        .print "Loader segment: $8000-", endload-1, " (", endload-$8000, " bytes)"
+   168 				Loader segment: $8000-$BAD7 ($3AD8 bytes)
+   169
+   170 				; INIT vector for this segment
+   171 BAD8			        org $02E2
+   172 02E2-02E3> 00 80		        .word vbxe_load
