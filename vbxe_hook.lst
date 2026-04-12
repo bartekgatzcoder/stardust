@@ -4,83 +4,100 @@ Source: vbxe_hook.asm
      1 				; VBXE Hook Code for Starquake
      2 				;
      3 				; Hook points (in the $20C5 title/screen cycling loop):
-     4 				;   $20CA — JSR $356C: title screen about to display → enable VBXE
+     4 				;   $20CA — JSR $356C: title screen setup → enable VBXE
      5 				;   $20F2 — LDX #$00 / JSR $2639: next screen init → disable VBXE
      6 				;
-     7 				; Does NOT hook $0BBF — that code is shared by all screens
-     8 				; and would re-enable VBXE during non-title screen inits.
-     9
-    10 = D640			VBXE_VC    = $D640
-    11 = 0010			VBXE_ID    = $10
-    12
-    13 = 05B9			GAME_ENTRY = $05B9
-    14 = BC1A			RELOC_JMP  = $BC1A
-    15
-    16 				; Title enable: $20CA has JSR $356C (3 bytes)
-    17 = 20CA			TENAB_ADDR = $20CA
-    18 = 356C			TENAB_ORIG = $356C       ; original JSR target
-    19 = 20CD			TENAB_CONT = $20CD       ; next instruction after JSR
+     7 				; $20CA hook uses JSR-redirect: the original JSR $356C
+     8 				; is replaced with JSR tsetup. tsetup enables VBXE then
+     9 				; JMPs to $356C. When $356C does RTS, it returns to
+    10 				; $20CD (the return address pushed by the ORIGINAL JSR).
+    11 				; Stack-neutral — no extra frames.
+    12 				;
+    13 				; $20F2 hook uses the same pattern for $2639.
+    14
+    15 = D640			VBXE_VC     = $D640
+    16 = 0010			VBXE_ID     = $10
+    17
+    18 = 05B9			GAME_ENTRY  = $05B9
+    19 = BC1A			RELOC_JMP   = $BC1A
     20
-    21 				; Title disable: $20F2 has LDX #$00 (2b) + JSR $2639 (3b)
-    22 = 20F2			TDISAB_ADDR = $20F2
-    23 = 20F7			TDISAB_CONT = $20F7      ; first intact instruction after 3 patched bytes
-    24
-    25 				        org $0400
-    26
-    27 				; ---- INIT (called at XEX load) ----
-    28 				hook_init
-    29 FFFF> 0400-044B> AD 40 +         lda VBXE_VC
-    30 0403 C9 10		        cmp #VBXE_ID
-    31 0405 F0 01		        beq dodet
-    32 0407 60			        rts
-    33 0408			dodet
-    34 0408 A9 13		        lda #<postrel
-    35 040A 8D 1B BC		        sta RELOC_JMP+1
-    36 040D A9 04		        lda #>postrel
-    37 040F 8D 1C BC		        sta RELOC_JMP+2
-    38 0412 60			        rts
-    39
-    40 				; ---- POST-RELOC ----
-    41 0413			postrel
-    42 				        ; Patch $20CA: JSR $356C -> JMP tsetup
-    43 0413 A9 4C		        lda #$4C
-    44 0415 8D CA 20		        sta TENAB_ADDR
-    45 0418 A9 34		        lda #<tsetup
-    46 041A 8D CB 20		        sta TENAB_ADDR+1
-    47 041D A9 04		        lda #>tsetup
-    48 041F 8D CC 20		        sta TENAB_ADDR+2
-    49
-    50 				        ; Patch $20F2: LDX #$00/JSR -> JMP tdone
-    51 0422 A9 4C		        lda #$4C
-    52 0424 8D F2 20		        sta TDISAB_ADDR
-    53 0427 A9 3F		        lda #<tdone
-    54 0429 8D F3 20		        sta TDISAB_ADDR+1
-    55 042C A9 04		        lda #>tdone
-    56 042E 8D F4 20		        sta TDISAB_ADDR+2
-    57
-    58 0431 4C B9 05		        jmp GAME_ENTRY
-    59
-    60 				; ---- TITLE SCREEN ENABLE ----
-    61 				; Replaces JSR $356C at $20CA.
-    62 0434			tsetup
-    63 0434 A9 01		        lda #$01
-    64 0436 8D 40 D6		        sta VBXE_VC       ; overlay on
-    65 0439 20 6C 35		        jsr TENAB_ORIG    ; JSR $356C (original)
-    66 043C 4C CD 20		        jmp TENAB_CONT    ; -> $20CD
-    67
-    68 				; ---- NEXT SCREEN DISABLE ----
-    69 				; Replaces LDX #$00 / JSR $2639 at $20F2.
-    70 043F			tdone
-    71 043F A9 00		        lda #$00
-    72 0441 8D 40 D6		        sta VBXE_VC       ; overlay off
-    73 0444 A2 00		        ldx #$00          ; original $20F2
-    74 0446 20 39 26		        jsr $2639         ; original $20F4
-    75 0449 4C F7 20		        jmp TDISAB_CONT   ; -> $20F7
-    76
-    77 				        .if * > $0580
-    78 				        .error "Hook segment exceeds $0580!"
-    79 				        .endif
-    80
-    81 				; INIT vector
-    82 044C			        org $02E2
-    83 02E2-02E3> 00 04		        .word hook_init
+    21 				; Addresses in the $20C5 title/screen loop
+    22 = 20CA			TENAB_ADDR  = $20CA      ; JSR $356C
+    23 = 356C			TENAB_ORIG  = $356C
+    24 = 20F2			TDISAB_ADDR = $20F2      ; LDX #$00 at $20F2, JSR $2639 at $20F4
+    25
+    26 				        org $0400
+    27
+    28 				; ---- INIT ----
+    29 				hook_init
+    30 FFFF> 0400-0448> AD 40 +         lda VBXE_VC
+    31 0403 C9 10		        cmp #VBXE_ID
+    32 0405 F0 01		        beq dodet
+    33 0407 60			        rts
+    34 0408			dodet
+    35 0408 A9 13		        lda #<postrel
+    36 040A 8D 1B BC		        sta RELOC_JMP+1
+    37 040D A9 04		        lda #>postrel
+    38 040F 8D 1C BC		        sta RELOC_JMP+2
+    39 0412 60			        rts
+    40
+    41 				; ---- POST-RELOC ----
+    42 0413			postrel
+    43 				        ; $20CA: replace JSR $356C with JSR tsetup
+    44 				        ; tsetup does VBXE enable then JMP $356C.
+    45 				        ; $356C's RTS pops $20CC → continues at $20CD.
+    46 0413 A9 37		        lda #<tsetup
+    47 0415 8D CB 20		        sta TENAB_ADDR+1
+    48 0418 A9 04		        lda #>tsetup
+    49 041A 8D CC 20		        sta TENAB_ADDR+2
+    50 				        ; (opcode at $20CA stays $20 = JSR, unchanged)
+    51
+    52 				        ; $20F2: replace LDX #$00 / JSR $2639 with
+    53 				        ; JSR tdone / NOP NOP.
+    54 				        ; tdone does VBXE disable, LDX #0, JMP $2639.
+    55 				        ; $2639's RTS pops $20F4 → continues at $20F5.
+    56 				        ; But $20F5 has the old target bytes ($39 $26),
+    57 				        ; which would execute as AND $26. BAD!
+    58 				        ;
+    59 				        ; Instead: replace all 5 bytes $20F2-$20F6 with
+    60 				        ; JSR tdone + NOP + NOP. tdone does everything
+    61 				        ; and JMPs to $20F7 directly.
+    62 041D A9 20		        lda #$20          ; JSR opcode
+    63 041F 8D F2 20		        sta TDISAB_ADDR
+    64 0422 A9 3F		        lda #<tdone
+    65 0424 8D F3 20		        sta TDISAB_ADDR+1
+    66 0427 A9 04		        lda #>tdone
+    67 0429 8D F4 20		        sta TDISAB_ADDR+2
+    68 042C A9 EA		        lda #$EA          ; NOP
+    69 042E 8D F5 20		        sta TDISAB_ADDR+3
+    70 0431 8D F6 20		        sta TDISAB_ADDR+4
+    71
+    72 0434 4C B9 05		        jmp GAME_ENTRY
+    73
+    74 				; ---- TITLE ENABLE ----
+    75 				; Called via JSR from $20CA. Enables VBXE then falls
+    76 				; into $356C. When $356C does RTS, it returns to $20CD
+    77 				; (the address pushed by the JSR at $20CA).
+    78 0437			tsetup
+    79 0437 A9 01		        lda #$01
+    80 0439 8D 40 D6		        sta VBXE_VC
+    81 043C 4C 6C 35		        jmp TENAB_ORIG    ; -> $356C
+    82
+    83 				; ---- NEXT SCREEN DISABLE ----
+    84 				; Called via JSR from $20F2. Disables VBXE, does the
+    85 				; original LDX #0, then JMPs to $2639. When $2639
+    86 				; does RTS, it returns to $20F5 — but we NOPed those
+    87 				; bytes, so it falls through to $20F7. Clean.
+    88 043F			tdone
+    89 043F A9 00		        lda #$00
+    90 0441 8D 40 D6		        sta VBXE_VC
+    91 0444 A2 00		        ldx #$00
+    92 0446 4C 39 26		        jmp $2639
+    93
+    94 				        .if * > $0580
+    95 				        .error "Hook segment exceeds $0580!"
+    96 				        .endif
+    97
+    98 				; INIT vector
+    99 0449			        org $02E2
+   100 02E2-02E3> 00 04		        .word hook_init
