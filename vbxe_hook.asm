@@ -76,8 +76,12 @@ postrel
 ; into $356C. When $356C does RTS, it returns to $20CD
 ; (the address pushed by the JSR at $20CA).
 tsetup
+        lda #$00
+        sta VBXE_VC+1     ; XDL_ADR0 = 0
+        sta VBXE_VC+2     ; XDL_ADR1 = 0
+        sta VBXE_VC+3     ; XDL_ADR2 = 0
         lda #$01
-        sta VBXE_VC
+        sta VBXE_VC       ; XDL enabled
         jmp TENAB_ORIG    ; -> $356C
 
 ; ---- NEXT SCREEN DISABLE ----

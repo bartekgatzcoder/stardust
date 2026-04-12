@@ -30,7 +30,7 @@ Source: vbxe_hook.asm
     27
     28 				; ---- INIT ----
     29 				hook_init
-    30 FFFF> 0400-0448> AD 40 +         lda VBXE_VC
+    30 FFFF> 0400-0453> AD 40 +         lda VBXE_VC
     31 0403 C9 10		        cmp #VBXE_ID
     32 0405 F0 01		        beq dodet
     33 0407 60			        rts
@@ -64,7 +64,7 @@ Source: vbxe_hook.asm
     61 				        ; and JMPs to $20F7 directly.
     62 041D A9 20		        lda #$20          ; JSR opcode
     63 041F 8D F2 20		        sta TDISAB_ADDR
-    64 0422 A9 3F		        lda #<tdone
+    64 0422 A9 4A		        lda #<tdone
     65 0424 8D F3 20		        sta TDISAB_ADDR+1
     66 0427 A9 04		        lda #>tdone
     67 0429 8D F4 20		        sta TDISAB_ADDR+2
@@ -79,25 +79,29 @@ Source: vbxe_hook.asm
     76 				; into $356C. When $356C does RTS, it returns to $20CD
     77 				; (the address pushed by the JSR at $20CA).
     78 0437			tsetup
-    79 0437 A9 01		        lda #$01
-    80 0439 8D 40 D6		        sta VBXE_VC
-    81 043C 4C 6C 35		        jmp TENAB_ORIG    ; -> $356C
-    82
-    83 				; ---- NEXT SCREEN DISABLE ----
-    84 				; Called via JSR from $20F2. Disables VBXE, does the
-    85 				; original LDX #0, then JMPs to $2639. When $2639
-    86 				; does RTS, it returns to $20F5 — but we NOPed those
-    87 				; bytes, so it falls through to $20F7. Clean.
-    88 043F			tdone
-    89 043F A9 00		        lda #$00
-    90 0441 8D 40 D6		        sta VBXE_VC
-    91 0444 A2 00		        ldx #$00
-    92 0446 4C 39 26		        jmp $2639
-    93
-    94 				        .if * > $0580
-    95 				        .error "Hook segment exceeds $0580!"
-    96 				        .endif
+    79 0437 A9 00		        lda #$00
+    80 0439 8D 41 D6		        sta VBXE_VC+1     ; XDL_ADR0 = 0
+    81 043C 8D 42 D6		        sta VBXE_VC+2     ; XDL_ADR1 = 0
+    82 043F 8D 43 D6		        sta VBXE_VC+3     ; XDL_ADR2 = 0
+    83 0442 A9 01		        lda #$01
+    84 0444 8D 40 D6		        sta VBXE_VC       ; XDL enabled
+    85 0447 4C 6C 35		        jmp TENAB_ORIG    ; -> $356C
+    86
+    87 				; ---- NEXT SCREEN DISABLE ----
+    88 				; Called via JSR from $20F2. Disables VBXE, does the
+    89 				; original LDX #0, then JMPs to $2639. When $2639
+    90 				; does RTS, it returns to $20F5 — but we NOPed those
+    91 				; bytes, so it falls through to $20F7. Clean.
+    92 044A			tdone
+    93 044A A9 00		        lda #$00
+    94 044C 8D 40 D6		        sta VBXE_VC
+    95 044F A2 00		        ldx #$00
+    96 0451 4C 39 26		        jmp $2639
     97
-    98 				; INIT vector
-    99 0449			        org $02E2
-   100 02E2-02E3> 00 04		        .word hook_init
+    98 				        .if * > $0580
+    99 				        .error "Hook segment exceeds $0580!"
+   100 				        .endif
+   101
+   102 				; INIT vector
+   103 0454			        org $02E2
+   104 02E2-02E3> 00 04		        .word hook_init
