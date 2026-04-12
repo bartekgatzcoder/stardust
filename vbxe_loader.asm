@@ -65,7 +65,8 @@ wxdl    lda xdl_data,x
 
         ; ---- Decompress RLE overlay to VRAM $10000 ----
         lda #MEMAC_MCE+OVL_BANK0
-        sta MEMAC_A       ; bank 4 → VRAM $10000
+        sta MEMAC_A       ; bank 4 -> VRAM $10000
+        sta cur_bank      ; track in RAM (register is write-only)
 
         lda #<rle_data
         sta ZSRC
@@ -74,15 +75,15 @@ wxdl    lda xdl_data,x
         lda #$00
         sta ZDST
         lda #$40
-        sta ZDST+1        ; dest = $4000 (MEMAC window)
+        sta ZDST+1        ; dest = $4000 (MEMAC window start)
 
 dloop   ldy #0
         lda (ZSRC),y      ; count
-        beq ddone          ; 0 = end of RLE
-        tax                ; X = run length
+        beq ddone         ; 0 = end marker
+        tax               ; X = run length
         iny
         lda (ZSRC),y      ; value
-        pha                ; save value
+        sta fill_val      ; save in RAM (A gets trashed by bank switch)
 
         ; Advance ZSRC by 2
         clc
@@ -92,30 +93,33 @@ dloop   ldy #0
         bcc nosrhi
         inc ZSRC+1
 nosrhi
-        pla                ; A = value
-wloop   ldy #0
+
+wloop   lda fill_val      ; reload fill value each iteration
+        ldy #0
         sta (ZDST),y
 
-        ; Advance ZDST
+        ; Advance ZDST by 1
         inc ZDST
         bne nodshi
         inc ZDST+1
 nodshi
-        ; Check if ZDST reached $8000 (end of 16K window)
-        ldy ZDST+1
-        cpy #$80
+        ; Check if ZDST reached $8000 (end of 16K MEMAC window)
+        lda ZDST+1
+        cmp #$80
         bcc nobnk
 
-        ; Switch to next MEMAC bank
-        ldy #$00
-        sty ZDST
-        ldy #$40
-        sty ZDST+1        ; reset to $4000
-        inc MEMAC_A        ; next bank
+        ; Bank switch: reset window pointer, advance bank
+        lda #$00
+        sta ZDST
+        lda #$40
+        sta ZDST+1
+        inc cur_bank
+        lda cur_bank
+        sta MEMAC_A
 
 nobnk   dex
         bne wloop
-        beq dloop          ; next RLE pair
+        beq dloop         ; next RLE pair
 
 ddone
         ; ---- Disable MEMAC ----
@@ -124,8 +128,8 @@ ddone
 
         ; ---- Set palette (palette 1, colors 1-7) ----
         lda #1
-        sta VBXE_CSEL      ; start at color index 1
-        sta VBXE_PSEL      ; palette 1
+        sta VBXE_CSEL     ; start at color index 1
+        sta VBXE_PSEL     ; palette 1
 
         ldx #0
 ploop   lda pal_data,x
@@ -135,7 +139,7 @@ ploop   lda pal_data,x
         sta VBXE_CG
         inx
         lda pal_data,x
-        sta VBXE_CB         ; auto-advances CSEL
+        sta VBXE_CB       ; auto-advances CSEL
         inx
         cpx #NUM_COLORS*3
         bcc ploop
@@ -147,8 +151,7 @@ ploop   lda pal_data,x
         sta VBXE_XA2
 
         ; Don't enable VIDEO_CONTROL yet.
-        ; The hook code enables it when the title
-        ; screen appears.
+        ; The hook code enables it at title screen entry.
         rts
 
 ; ---- XDL data (13 bytes) ----
@@ -159,6 +162,10 @@ xdl_len = *-xdl_data
 ; ---- Palette data (21 bytes) ----
 pal_data
         ins 'data/palette.bin'
+
+; ---- Variables ----
+cur_bank  .byte 0
+fill_val  .byte 0
 
 ; ---- RLE-compressed overlay (14873 bytes) ----
 rle_data
