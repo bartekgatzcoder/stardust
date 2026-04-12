@@ -1,0 +1,244 @@
+mads 2.1.8
+vbxe_title.asm -o:vbxe_title.xex -l:vbxe_title.lst 
+Source: vbxe_title.asm
+     1 				; VBXE Title Screen Patch for Starquake (v3)
+     2 				; ALL VBXE work done in VBI hook. INIT only patches reloc JMP.
+     3 				; Data under ROM accessed with ROM briefly disabled in VBI.
+     4
+     5 = D640			VBXE    = $D640
+     6 = D640			VBXE_VC = VBXE+$00
+     7 = D641			VBXE_XA0 = VBXE+$01
+     8 = D642			VBXE_XA1 = VBXE+$02
+     9 = D643			VBXE_XA2 = VBXE+$03
+    10 = D644			VBXE_CSEL = VBXE+$04
+    11 = D645			VBXE_PSEL = VBXE+$05
+    12 = D646			VBXE_CR = VBXE+$06
+    13 = D647			VBXE_CG = VBXE+$07
+    14 = D648			VBXE_CB = VBXE+$08
+    15 = D65E			VBXE_MC = VBXE+$1E
+    16 = D65F			VBXE_MB = VBXE+$1F
+    17
+    18 = D301			PORTB   = $D301
+    19 = D40E			NMIEN   = $D40E
+    20 = D017			COLPF1_HW = $D017
+    21 = D018			COLPF2_HW = $D018
+    22 = D01A			COLBK_HW = $D01A
+    23 = 02C5			COLPF1_S = $02C5
+    24 = 02C6			COLPF2_S = $02C6
+    25 = 02C8			COLBK_S  = $02C8
+    26
+    27 = A1F0			BITMAP_ADDR = $A1F0
+    28 = 395E			DL_ADDR   = $395E
+    29 = 0BD6			GAME_VBI  = $0BD6
+    30 = 05B9			GAME_ENTRY = $05B9
+    31 = BC1A			RELOC_JMP = $BC1A
+    32 = 0007			NUM_COLORS = 7
+    33 = C000			DATA_VRAM = $C000
+    34 = D800			DATA_BMP  = $D800
+    35
+    36 = 00FB			ZSRC = $FB
+    37 = 00FD			ZDST = $FD
+    38
+    39 				        org $0400
+    40
+    41 				; === Data always accessible ===
+    42 FFFF> 0400-056E> 00 00 + pal_data  ins 'data/c64_palette.bin'
+    43 0415 A5 AA 8D		orig_vbi  .byte $A5,$AA,$8D
+    44 0418 00			copy_pg   .byte 0
+    45
+    46 				; === Shared copy: copy_pg pages from (ZSRC) to (ZDST) ===
+    47 0419			copy_pages
+    48 0419 A0 00		        ldy #0
+    49 041B B1 FB		cp_lp   lda (ZSRC),y
+    50 041D 91 FD		        sta (ZDST),y
+    51 041F C8			        iny
+    52 0420 D0 F9		        bne cp_lp
+    53 0422 E6 FC		        inc ZSRC+1
+    54 0424 E6 FE		        inc ZDST+1
+    55 0426 CE 18 04		        dec copy_pg
+    56 0429 D0 F0		        bne cp_lp
+    57 042B 60			        rts
+    58
+    59 				; === INIT — only patches reloc JMP ===
+    60 042C			init_routine
+    61 042C A9 37		        lda #<post_reloc
+    62 042E 8D 1B BC		        sta RELOC_JMP+1
+    63 0431 A9 04		        lda #>post_reloc
+    64 0433 8D 1C BC		        sta RELOC_JMP+2
+    65 0436 60			        rts
+    66
+    67 				; === POST-RELOC ===
+    68 0437			post_reloc
+    69 0437 A9 4C		        lda #$4C
+    70 0439 8D D6 0B		        sta GAME_VBI
+    71 043C A9 49		        lda #<vbi_hook
+    72 043E 8D D7 0B		        sta GAME_VBI+1
+    73 0441 A9 04		        lda #>vbi_hook
+    74 0443 8D D8 0B		        sta GAME_VBI+2
+    75 0446 4C B9 05		        jmp GAME_ENTRY
+    76
+    77 				; === VBI HOOK ===
+    78 0449			vbi_hook
+    79 0449 AD 5E 39		        lda DL_ADDR
+    80 044C C9 70		        cmp #$70
+    81 044E D0 13		        bne vfail
+    82 0450 AD 61 39		        lda DL_ADDR+3
+    83 0453 C9 4F		        cmp #$4F
+    84 0455 D0 0C		        bne vfail
+    85 0457 AD 63 39		        lda DL_ADDR+5
+    86 045A C9 A1		        cmp #>BITMAP_ADDR
+    87 045C D0 05		        bne vfail
+    88 045E AD C2 A2		        lda BITMAP_ADDR+210
+    89 0461 D0 03		        bne vsetup
+    90 0463 4C 6A 05		vfail   jmp vdone
+    91
+    92 0466			vsetup
+    93 				        ; === Disable OS ROM to access data at $C000+ ===
+    94 0466 AD 01 D3		        lda PORTB
+    95 0469 48			        pha               ; save on stack
+    96 046A 29 FE		        and #$FE
+    97 046C 8D 01 D3		        sta PORTB
+    98
+    99 				        ; === Upload VRAM data (4K) $C000→VBXE $00000 ===
+   100 046F A9 58		        lda #$58          ; MEMAC at $5000
+   101 0471 8D 5E D6		        sta VBXE_MC
+   102 0474 A9 80		        lda #$80          ; bank 0
+   103 0476 8D 5F D6		        sta VBXE_MB
+   104 0479 A9 00		        lda #$00
+   105 047B 85 FB		        sta ZSRC
+   106 047D 85 FD		        sta ZDST
+   107 047F A9 C0		        lda #>DATA_VRAM
+   108 0481 85 FC		        sta ZSRC+1
+   109 0483 A9 50		        lda #$50
+   110 0485 85 FE		        sta ZDST+1
+   111 0487 A9 10		        lda #$10
+   112 0489 8D 18 04		        sta copy_pg
+   113 048C 20 19 04		        jsr copy_pages
+   114
+   115 				        ; === Upload bitmap 4K: $D800→VBXE $01000 ===
+   116 048F A9 81		        lda #$81
+   117 0491 8D 5F D6		        sta VBXE_MB
+   118 0494 A9 00		        lda #$00
+   119 0496 85 FB		        sta ZSRC
+   120 0498 85 FD		        sta ZDST
+   121 049A A9 D8		        lda #>DATA_BMP
+   122 049C 85 FC		        sta ZSRC+1
+   123 049E A9 50		        lda #$50
+   124 04A0 85 FE		        sta ZDST+1
+   125 04A2 A9 10		        lda #$10
+   126 04A4 8D 18 04		        sta copy_pg
+   127 04A7 20 19 04		        jsr copy_pages
+   128
+   129 				        ; === Upload bitmap 3584B→VBXE $02000 ===
+   130 04AA A9 82		        lda #$82
+   131 04AC 8D 5F D6		        sta VBXE_MB
+   132 04AF A9 00		        lda #$00
+   133 04B1 85 FD		        sta ZDST
+   134 04B3 A9 50		        lda #$50
+   135 04B5 85 FE		        sta ZDST+1
+   136 04B7 A9 0E		        lda #14
+   137 04B9 8D 18 04		        sta copy_pg
+   138 04BC 20 19 04		        jsr copy_pages
+   139
+   140 				        ; Disable MEMAC
+   141 04BF A9 00		        lda #0
+   142 04C1 8D 5E D6		        sta VBXE_MC
+   143 04C4 8D 5F D6		        sta VBXE_MB
+   144
+   145 				        ; === Re-enable OS ROM ===
+   146 04C7 68			        pla
+   147 04C8 8D 01 D3		        sta PORTB
+   148
+   149 				        ; === Copy bitmap from VBXE VRAM to $A1F0 ===
+   150 04CB A9 58		        lda #$58
+   151 04CD 8D 5E D6		        sta VBXE_MC
+   152 04D0 A9 81		        lda #$81
+   153 04D2 8D 5F D6		        sta VBXE_MB
+   154 04D5 A9 00		        lda #$00
+   155 04D7 85 FB		        sta ZSRC
+   156 04D9 85 FD		        sta ZDST
+   157 04DB A9 50		        lda #$50
+   158 04DD 85 FC		        sta ZSRC+1
+   159 04DF A9 A1		        lda #>BITMAP_ADDR
+   160 04E1 85 FE		        sta ZDST+1
+   161 04E3 A9 F0		        lda #<BITMAP_ADDR
+   162 04E5 85 FD		        sta ZDST
+   163 04E7 A9 10		        lda #$10
+   164 04E9 8D 18 04		        sta copy_pg
+   165 04EC 20 19 04		        jsr copy_pages
+   166
+   167 04EF A9 82		        lda #$82
+   168 04F1 8D 5F D6		        sta VBXE_MB
+   169 04F4 A9 00		        lda #$00
+   170 04F6 85 FB		        sta ZSRC
+   171 04F8 A9 50		        lda #$50
+   172 04FA 85 FC		        sta ZSRC+1
+   173 04FC A9 0E		        lda #14
+   174 04FE 8D 18 04		        sta copy_pg
+   175 0501 20 19 04		        jsr copy_pages
+   176
+   177 0504 A9 00		        lda #0
+   178 0506 8D 5E D6		        sta VBXE_MC
+   179 0509 8D 5F D6		        sta VBXE_MB
+   180
+   181 				        ; === Palette ===
+   182 050C A9 00		        lda #0
+   183 050E 8D 45 D6		        sta VBXE_PSEL
+   184 0511 8D 44 D6		        sta VBXE_CSEL
+   185 0514 A2 00		        ldx #0
+   186 0516 BD 00 04		vpl     lda pal_data,x
+   187 0519 8D 46 D6		        sta VBXE_CR
+   188 051C E8			        inx
+   189 051D BD 00 04		        lda pal_data,x
+   190 0520 8D 47 D6		        sta VBXE_CG
+   191 0523 E8			        inx
+   192 0524 BD 00 04		        lda pal_data,x
+   193 0527 8D 48 D6		        sta VBXE_CB
+   194 052A E8			        inx
+   195 052B E0 15		        cpx #NUM_COLORS*3
+   196 052D D0 E7		        bne vpl
+   197
+   198 				        ; === Zero ANTIC + disable DLI ===
+   199 052F A9 00		        lda #0
+   200 0531 8D 17 D0		        sta COLPF1_HW
+   201 0534 8D 18 D0		        sta COLPF2_HW
+   202 0537 8D 1A D0		        sta COLBK_HW
+   203 053A 8D C5 02		        sta COLPF1_S
+   204 053D 8D C6 02		        sta COLPF2_S
+   205 0540 8D C8 02		        sta COLBK_S
+   206 0543 A9 40		        lda #$40
+   207 0545 8D 0E D4		        sta NMIEN
+   208
+   209 				        ; === Enable VBXE ===
+   210 0548 A9 00		        lda #0
+   211 054A 8D 41 D6		        sta VBXE_XA0
+   212 054D 8D 42 D6		        sta VBXE_XA1
+   213 0550 8D 43 D6		        sta VBXE_XA2
+   214 0553 A9 03		        lda #$03
+   215 0555 8D 40 D6		        sta VBXE_VC
+   216
+   217 				        ; === Unhook ===
+   218 0558 AD 15 04		        lda orig_vbi
+   219 055B 8D D6 0B		        sta GAME_VBI
+   220 055E AD 16 04		        lda orig_vbi+1
+   221 0561 8D D7 0B		        sta GAME_VBI+1
+   222 0564 AD 17 04		        lda orig_vbi+2
+   223 0567 8D D8 0B		        sta GAME_VBI+2
+   224
+   225 056A A5 AA		vdone   lda $AA
+   226 056C 4C D9 0B		        jmp GAME_VBI+3
+   227
+   228 056F			code_end
+   229 				        .if code_end > $0580
+   230 				        .error "Code overflows!"
+   231 				        .endif
+   232
+   233 				; === DATA under ROM ===
+   234 056F			        org DATA_VRAM
+   235 C000-CFFF> 24 00 17 2C +         ins 'data/vbxe_vram.bin'
+   236 D000			        org DATA_BMP
+   237 D800-F5FF> 6A 00 00 00 +         ins 'data/c64_bitmap.bin'
+   238
+   239 				; === INIT vector ===
+   240 F600			        org $02E2
+   241 02E2-02E3> 2C 04		        .word init_routine
