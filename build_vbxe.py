@@ -155,7 +155,7 @@ def patch_game(runtime_addr, new_bytes):
 new_vbi = bytes([
     0xA5, 0xAA,             # LDA $AA
     0x8D, 0x18, 0xD0,       # STA $D018
-    0xD0, 0x02,             # BNE +2 (skip LDA #$01)
+    0xD0, 0x03,             # BNE +3 (skip to LDA #$00)
     0xA9, 0x01,             # LDA #$01 (VBXE on)
     0x2C,                   # BIT abs (skip next 2 bytes)
     0xA9, 0x00,             # LDA #$00 (VBXE off)
