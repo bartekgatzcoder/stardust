@@ -153,14 +153,14 @@ def patch_game(runtime_addr, new_bytes):
 # functional. Let's try it.
 
 new_vbi = bytes([
-    0xA5, 0xAA,             # LDA $AA
-    0x8D, 0x18, 0xD0,       # STA $D018
-    0xD0, 0x03,             # BNE +3 (skip to LDA #$00)
-    0xA9, 0x01,             # LDA #$01 (VBXE on)
+    0xA5, 0x27,             # LDA $27 (DLI color: 0=title, nonzero=gameplay)
+    0xD0, 0x03,             # BNE +3 (gameplay → skip to LDA #$00)
+    0xA9, 0x01,             # LDA #$01 (VBXE on for title)
     0x2C,                   # BIT abs (skip next 2 bytes)
-    0xA9, 0x00,             # LDA #$00 (VBXE off)
-    0x8D, 0x40, 0xD6,       # STA $D640
+    0xA9, 0x00,             # LDA #$00 (VBXE off for gameplay)
+    0x8D, 0x40, 0xD6,       # STA $D640 (VIDEO_CONTROL)
     0x4C, 0x62, 0xE4,       # JMP $E462 (XITVBV)
+    0xEA, 0xEA, 0xEA,       # NOP padding (unreachable)
 ])
 assert len(new_vbi) == 18, f"VBI is {len(new_vbi)} bytes, need 18"
 
