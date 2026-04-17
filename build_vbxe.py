@@ -125,6 +125,9 @@ seg_end = 0xBFFF
 print(f"Segment: $BC00-${seg_end:04X} ({len(seg)} bytes)")
 
 # === Rebuild game XEX ===
+# Re-parse game_data to pick up VBI patch applied via patch_game()
+game_segs = parse_xex(game_data)
+
 output = bytearray()
 for s, e_orig, d in game_segs:
     if s == 0xBC00:
