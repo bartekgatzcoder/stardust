@@ -26,7 +26,7 @@ ZDST      = $FD
 
 MEMAC_MCE = $80
 OVL_BANK0 = 4
-NUM_COLORS = 7
+NUM_COLORS = 12
 VBXE_ID   = $10
 
         org $8000
