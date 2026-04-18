@@ -139,28 +139,9 @@ ddone
         cpx #120           ; 120 pages = 30720 bytes
         bcc @clr_pg
 
-        ; === 5. Copy sprite frames to VRAM $30000 ===
-        lda #MEMAC_MCE+SPRITE_VRAM_BANK
-        sta MEMAC_A
-        lda #<sprite_data
-        sta ZSRC
-        lda #>sprite_data
-        sta ZSRC+1
-        lda #$00
-        sta ZDST
-        lda #$40
-        sta ZDST+1
-        ; 2816 bytes = 11 pages
-        ldx #11
-@spy_pg ldy #0
-@spy_lp lda (ZSRC),y
-        sta (ZDST),y
-        iny
-        bne @spy_lp
-        inc ZSRC+1
-        inc ZDST+1
-        dex
-        bne @spy_pg
+        ; Sprite frame data is NOT loaded here (would push segment
+        ; past $C000 OS ROM boundary). It is written to VRAM by
+        ; the handler-install code at $BC1E instead.
 
         ; === 6. Set palette ===
         ; Sprite colors first (indices 1-5)
@@ -223,9 +204,6 @@ sprite_pal
 
 cur_bank  .byte 0
 fill_val  .byte 0
-
-sprite_data
-        ins 'data/sprite_frames.bin'
 
 rle_data
         ins 'data/overlay_rle.bin'
