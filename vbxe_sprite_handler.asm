@@ -165,13 +165,13 @@ skip_clear
         dex
         bne @draw_row
 
-        ; Disable MEMAC_B (restore normal RAM at $8000)
+        ; Restore MEMAC windows (CRITICAL - game RAM at $4000+/$8000+)
         lda #$00
-        sta MEMAC_B
+        sta MEMAC_A        ; Unmap VRAM from $4000-$7FFF
+        sta MEMAC_B        ; Unmap VRAM from $8000-$BFFF
 
         ; Hide P/M player 0
-        lda #$00
-        sta HPOSP0
+        sta HPOSP0         ; A already 0
 
         jmp XITVBV
 
