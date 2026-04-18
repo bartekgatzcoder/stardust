@@ -31,17 +31,8 @@ sprite_handler
         jmp XITVBV
 
 do_gameplay
-        ; --- Gameplay: XDL at $00020, VBXE on ---
-        lda #$20
-        sta VBXE_XA0
+        ; --- Gameplay: VBXE off (same as working v1.1) ---
+        ; Gameplay overlay XDL needs verification before enabling.
         lda #$00
-        sta VBXE_XA1
-        sta VBXE_XA2
-        lda #$01
         sta VBXE_VC
-
-        ; TODO: sprite drawing via MEMAC_A two-pass
-        ; (read sprite row from VRAM bank, copy to ZP temp,
-        ;  switch to overlay bank, write from temp)
-
         jmp XITVBV
