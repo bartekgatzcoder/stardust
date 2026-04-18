@@ -198,6 +198,17 @@ open('Starquake_patched.xex', 'wb').write(output)
 
 # Merge with VBXE loader
 loader = open('vbxe_loader.xex', 'rb').read()
+# Regression guard: any loader segment that extends into $BB80-$BBFF
+# gets picked up by the game's copy-down ($2300-$BBFF to $0580-$9E7F)
+# and corrupts the sprite/character data table that lives at RAM
+# $9E00-$9E7F. Fail the build loudly instead of shipping a broken XEX.
+for _ls, _le, _ld in parse_xex(loader):
+    if _ls < 0xBB80 and _le >= 0xBB80:
+        raise SystemExit(
+            f"loader segment ${_ls:04X}-${_le:04X} overlaps copy-down "
+            f"tail $BB80-$BBFF; game RAM $9E00-$9E7F would be "
+            f"corrupted. Shrink or split the loader."
+        )
 merged = loader + bytes(output)
 open('Starquake_VBXE.xex', 'wb').write(merged)
 print(f"Merged XEX: {len(merged)} bytes")
@@ -213,9 +224,23 @@ for s, e, d in segs:
     print(f"  ${s:04X}-${e:04X} ({len(d)} bytes){lbl}")
 
 # Spot-check VBI patch
-vbi_seg = next((d for s,e,d in segs if s <= 0x0BD6+RELOC <= e), None)
-if vbi_seg:
-    vbi_off = 0x0BD6+RELOC - next(s for s,e,d in segs if s <= 0x0BD6+RELOC <= e)
-    print(f"\nVBI bytes at runtime $0BD6 (xex ${0x0BD6+RELOC:04X}): {bytes(vbi_seg[vbi_off:vbi_off+3]).hex()}")
+# The merged XEX now has two segments that cover XEX $2956: the RLE
+# loader segment (overlay data) and the real game seg 1 ($2300-$62FF).
+# The OS loads segments in order, so the LAST segment to cover a given
+# runtime address is the one that ends up in RAM. Pick the game segment
+# by size: the RLE segment is 14909 bytes, game seg 1 is 16384 bytes,
+# and only game seg 1 extends past $62FF.
+game_seg1 = next(
+    (d for s, e, d in segs if s == 0x2300 and e >= 0x62FF),
+    None,
+)
+if game_seg1 is not None:
+    vbi_off = 0x0BD6 + RELOC - 0x2300
+    actual = bytes(game_seg1[vbi_off:vbi_off+3])
     expected = bytes([0x4C, 0x00, 0x9E])
-    print(f"Expected: {expected.hex()}  {'OK' if bytes(vbi_seg[vbi_off:vbi_off+3]) == expected else 'FAIL'}")
+    status = "OK" if actual == expected else "FAIL"
+    print(
+        f"\nVBI bytes at runtime $0BD6 (xex ${0x0BD6+RELOC:04X}): "
+        f"{actual.hex()}"
+    )
+    print(f"Expected: {expected.hex()}  {status}")

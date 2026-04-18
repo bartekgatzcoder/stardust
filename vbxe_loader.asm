@@ -1,16 +1,31 @@
 ; VBXE Overlay + Sprite Loader for Starquake
 ;
-; INIT segment at $8000. Runs before game loads. Does:
-; 1. Detect VBXE
-; 2. Write title XDL to VRAM $00000
-; 3. Write gameplay XDL to VRAM $00020
-; 4. Decompress title overlay to VRAM $10000
-; 5. Clear gameplay overlay buffer at VRAM $20000
-; 6. Copy sprite frame data to VRAM $30000
-; 7. Set palette
+; SEGMENT LAYOUT
 ;
-; Handler code is loaded to $9E00 by the copy-down extension,
-; NOT by this INIT. Sprite data read via MEMAC_B during VBI.
+;   $2300-$5DDC  RLE-compressed title overlay (14909 bytes).
+;                Loaded first. The game's own seg 1 later overwrites
+;                this region at $2300-$62FF, but only AFTER this
+;                loader's INIT has already decompressed the data to
+;                VBXE VRAM, so the clash is harmless.
+;   $8000-$????  Loader code + small data (XDL, palettes).
+;                Capped well below $BB80 so the copy-down does not
+;                corrupt game sprite data at RAM $9E00-$9E7F (which
+;                comes from XEX $BB80-$BBFF).
+;   $02E2-$02E3  INITAD → $8000, fires after the two segments above
+;                are in RAM.
+;
+; INIT steps performed at $8000:
+;   1. Detect VBXE
+;   2. Write title XDL to VRAM $00000
+;   3. Write gameplay XDL to VRAM $00020
+;   4. Decompress title overlay from RAM $2300 to VRAM $10000
+;   5. Clear gameplay overlay buffer at VRAM $20000
+;   6. Set palette
+;   7. Point XDL at title, enable VBXE permanently
+;   8. Clear INITAD so subsequent segments don't re-trigger us
+;
+; Sprite frame data is written to VRAM $30000 later by the copy-down
+; install code (not here — it would overflow this segment).
 
 VBXE      = $D640
 VBXE_VC   = VBXE+$00
@@ -24,16 +39,29 @@ VBXE_CG   = VBXE+$07
 VBXE_CB   = VBXE+$08
 MEMAC_A   = VBXE+$1D
 
+INITAD    = $02E2
+
 ZSRC      = $FB
 ZDST      = $FD
 
 MEMAC_MCE = $80
 OVL_BANK0 = 4
 GAME_OVL_BANK = 8
-SPRITE_VRAM_BANK = 12    ; Sprite data at VRAM $30000
+SPRITE_VRAM_BANK = 12
 NUM_TITLE_COLORS = 9
 NUM_SPRITE_COLORS = 5
 VBXE_ID   = $10
+
+; === Segment 1: RLE data ===
+; Placed FIRST in source so MADS emits it as the first XEX segment,
+; which means the OS has this data in RAM before INITAD fires.
+
+        org $2300
+rle_data
+        ins 'data/overlay_rle.bin'
+rle_end
+
+; === Segment 2: loader code ===
 
         org $8000
 
@@ -113,7 +141,7 @@ ddone
 
         ; === 4. Clear gameplay overlay at VRAM $20000 ===
         ; 30720 bytes = 120 pages, spanning MEMAC bank 8 ($20000-$23FFF,
-        ; 64 pages) then bank 9 ($24000-$27800, 56 pages).
+        ; 64 pages) then bank 9 ($24000-$277FF, 56 pages).
         ; MEMAC_A is effectively write-only from the CPU side on VBXE —
         ; reading it back does not return the value we wrote — so we
         ; track the current bank in cur_bank (shared with the RLE
@@ -142,14 +170,10 @@ ddone
         lda cur_bank
         sta MEMAC_A
 @no_cb  inx
-        cpx #120           ; 120 pages = 30720 bytes
+        cpx #120
         bcc @clr_pg
 
-        ; Sprite frame data is NOT loaded here (would push segment
-        ; past $C000 OS ROM boundary). It is written to VRAM by
-        ; the handler-install code at $BC1E instead.
-
-        ; === 6. Set palette ===
+        ; === 5. Set palette ===
         ; Sprite colors first (indices 1-5)
         lda #1
         sta VBXE_CSEL
@@ -183,24 +207,30 @@ ddone
         cpx #NUM_TITLE_COLORS*3
         bcc @tpal
 
-        ; === 7. Set default XDL (title) ===
+        ; === 6. Set default XDL (title), clear MEMAC ===
         lda #0
         sta VBXE_XA0
         sta VBXE_XA1
         sta VBXE_XA2
-
-        lda #0
         sta MEMAC_A
 
-        ; === 8. Enable VBXE permanently (title XDL active) ===
+        ; === 7. Enable VBXE permanently (title XDL active) ===
         ; The VBI handler only switches XDL address after this point;
         ; VBXE_VC is never written again.
         lda #$01
         sta VBXE_VC
 
+        ; === 8. Clear INITAD so later XEX segments don't re-run us ===
+        ; Some loaders leave $02E2-$02E3 unchanged between segments.
+        ; Rebuilding VBXE state after game segments have loaded (which
+        ; overwrite the RLE buffer at $2300) would corrupt the overlay.
+        lda #0
+        sta INITAD
+        sta INITAD+1
+
         rts
 
-; === Data ===
+; === Code-segment data (XDL descriptors, palettes, scratch) ===
 xdl_title_data
         ins 'data/xdl.bin'
 xdl_title_len = *-xdl_title_data
@@ -218,8 +248,7 @@ sprite_pal
 cur_bank  .byte 0
 fill_val  .byte 0
 
-rle_data
-        ins 'data/overlay_rle.bin'
+; === Segment 3: INITAD ===
 
-        org $02E2
+        org INITAD
         .word vbxe_load
