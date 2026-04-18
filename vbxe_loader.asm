@@ -185,6 +185,13 @@ ddone
 
         lda #0
         sta MEMAC_A
+
+        ; === 8. Enable VBXE permanently (title XDL active) ===
+        ; The VBI handler only switches XDL address after this point;
+        ; VBXE_VC is never written again.
+        lda #$01
+        sta VBXE_VC
+
         rts
 
 ; === Data ===

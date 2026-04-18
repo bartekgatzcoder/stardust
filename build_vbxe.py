@@ -78,7 +78,9 @@ MEMAC_SPRITE = 0x8C               # MEMAC_A bank 12 ($80 | 12)
 MEMAC_REG    = 0xD65D
 GAME_START   = 0x05B9
 
-assert HANDLER_LEN == 291, f"Expected 291-byte handler, got {HANDLER_LEN}"
+# Handler is now the Phase-1 minimal VBI (XDL-address-only). Size may
+# grow in later phases when sprite-draw routines are added alongside it.
+assert HANDLER_LEN < 256, f"Handler too large: {HANDLER_LEN} bytes"
 
 # === Build install code at $BC1E ===
 ic = bytearray()
