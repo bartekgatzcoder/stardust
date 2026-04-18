@@ -112,8 +112,15 @@ nobnk   dex
 ddone
 
         ; === 4. Clear gameplay overlay at VRAM $20000 ===
+        ; 30720 bytes = 120 pages, spanning MEMAC bank 8 ($20000-$23FFF,
+        ; 64 pages) then bank 9 ($24000-$27800, 56 pages).
+        ; MEMAC_A is effectively write-only from the CPU side on VBXE —
+        ; reading it back does not return the value we wrote — so we
+        ; track the current bank in cur_bank (shared with the RLE
+        ; decompressor above, which already uses the same pattern).
         lda #MEMAC_MCE+GAME_OVL_BANK
         sta MEMAC_A
+        sta cur_bank
         lda #$00
         sta ZDST
         lda #$40
@@ -128,14 +135,13 @@ ddone
         lda ZDST+1
         cmp #$80
         bcc @no_cb
+        ; Window full: wrap dest to $4000 and advance the tracked bank.
         lda #$40
         sta ZDST+1
-        lda MEMAC_A
-        clc
-        adc #1
+        inc cur_bank
+        lda cur_bank
         sta MEMAC_A
-@no_cb  lda #0
-        inx
+@no_cb  inx
         cpx #120           ; 120 pages = 30720 bytes
         bcc @clr_pg
 
