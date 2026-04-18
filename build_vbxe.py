@@ -38,11 +38,17 @@ def patch_game(runtime_addr, new_bytes):
     return False
 
 # === Patch VBI at $0BD6 (18 bytes) ===
+# Exact working v1.1 VBI: inline VBXE toggle, no $9E00 call.
+# Handler installs at $9E00 via copy-down but is NOT called yet.
+# This isolates whether the copy-down extension itself causes the crash.
 new_vbi = bytes([
-    0xA5, 0xAA, 0x8D, 0x18, 0xD0,  # LDA $AA / STA $D018
-    0xA9, 0x00, 0x85, 0x5F,         # LDA #0 / STA $5F
-    0x4C, 0x00, 0x9E,               # JMP $9E00
-    0xEA, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA
+    0xA5, 0x27,              # LDA $27 (0=title, nonzero=gameplay)
+    0xD0, 0x03,              # BNE +3 (gameplay: skip LDA #1)
+    0xA9, 0x01,              # LDA #1 (VBXE on)
+    0x2C, 0xA9, 0x00,        # BIT $00A9 (3-byte NOP: skip LDA #0)
+    0x8D, 0x40, 0xD6,        # STA $D640 (VBXE_VC)
+    0x4C, 0x62, 0xE4,        # JMP XITVBV
+    0xEA, 0xEA, 0xEA         # NOP x3
 ])
 assert len(new_vbi) == 18
 ok = patch_game(0x0BD6, new_vbi)
@@ -105,6 +111,14 @@ if rem > 0:
     e([0xC0, rem])          # CPY #remainder
     e([0xD0, 0xF7])         # BNE -9 (rem_loop)
 
+# Zero out ZP temporaries left by the copy loop.
+# $FB-$FE were used as source/dest pointers (values $BC50/$9E00).
+# Game init at $05B9 may rely on these being 0.
+e([0xA9, 0x00])          # LDA #0
+e([0x85, 0xFB])          # STA $FB
+e([0x85, 0xFC])          # STA $FC
+e([0x85, 0xFD])          # STA $FD
+e([0x85, 0xFE])          # STA $FE
 e([0x4C, GAME_START & 0xFF, GAME_START >> 8])  # JMP $05B9
 
 print(f"Install code: {len(ic)} bytes at $BC1E-${0xBC1E+len(ic)-1:04X}")
